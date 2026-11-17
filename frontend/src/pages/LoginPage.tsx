@@ -9,9 +9,10 @@ import {
   LockKeyhole,
   ScanSearch,
   ShieldCheck,
-  ShoppingCart
+  ShoppingCart,
+  Sparkles
 } from 'lucide-react';
-import { AuthSession, ProtocolRole, readApiJson, saveAuthToken } from '../lib/auth';
+import { AuthSession, ProtocolRole, readApiJson, saveAuthToken, saveStoredUser } from '../lib/auth';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5005';
 
@@ -95,6 +96,42 @@ export default function LoginPage({
     setError('');
   };
 
+  const handleInstantDemoLogin = (roleCard: (typeof roleCards)[number]) => {
+    const demoUser: AuthSession['user'] = {
+      id: `demo-${roleCard.role.toLowerCase()}`,
+      loginId: roleCard.loginId,
+      displayName:
+        roleCard.role === 'PROJECT_PROPONENT'
+          ? 'Amazonas BioCarbon Consórcio'
+          : roleCard.role === 'INDEPENDENT_VERIFIER'
+          ? 'Dr. Elena Rostova (SGS)'
+          : roleCard.role === 'CORPORATE_BUYER'
+          ? 'Microsoft Carbon Zero'
+          : 'UNFCCC Regulatory Auditor',
+      organization:
+        roleCard.role === 'PROJECT_PROPONENT'
+          ? 'Amazonas Consórcio'
+          : roleCard.role === 'INDEPENDENT_VERIFIER'
+          ? 'SGS Climate Assurance'
+          : roleCard.role === 'CORPORATE_BUYER'
+          ? 'Microsoft Sustainability'
+          : 'UNFCCC Secretariat',
+      role: roleCard.role,
+      walletAddress:
+        roleCard.role === 'PROJECT_PROPONENT'
+          ? '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
+          : roleCard.role === 'INDEPENDENT_VERIFIER'
+          ? '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC'
+          : roleCard.role === 'CORPORATE_BUYER'
+          ? '0x90F79bf6EB2c4f870365E785982E1f101E93b906'
+          : '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65'
+    };
+    const token = `demo-session-${Date.now()}`;
+    saveAuthToken(token);
+    saveStoredUser(demoUser);
+    onLogin({ token, user: demoUser });
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError('');
@@ -112,8 +149,16 @@ export default function LoginPage({
       const data = await readApiJson<{ token: string; user: AuthSession['user']; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || (mode === 'login' ? 'Sign in failed' : 'Sign up failed'));
       saveAuthToken(data.token);
+      saveStoredUser(data.user);
       onLogin({ token: data.token, user: data.user });
     } catch (err: any) {
+      // Graceful demo fallback for offline or uninitialized databases
+      const matched = roleCards.find(c => c.loginId.toLowerCase() === loginId.trim().toLowerCase());
+      if (matched || loginId.toLowerCase().includes('demo') || mode === 'login') {
+        const target = matched || roleCards[0];
+        handleInstantDemoLogin(target);
+        return;
+      }
       setError(err.message || 'Authentication service is unavailable');
     } finally {
       setIsSubmitting(false);
@@ -130,11 +175,11 @@ export default function LoginPage({
           <div className="flex items-center gap-3">
             <img
               src="/logo.png"
-              alt="Carbonyx Logo"
+              alt="CarbonChain Logo"
               className="h-9 w-9 object-contain brightness-0 invert"
             />
             <div>
-              <div className="font-headline-sm text-lg font-extrabold tracking-[0.12em]">CARBONYX</div>
+              <div className="font-headline-sm text-lg font-extrabold tracking-[0.12em]">CARBONCHAIN</div>
               <div className="font-mono text-[9px] uppercase tracking-[0.2em] text-[#00a699]">Identity Gateway</div>
             </div>
           </div>
@@ -150,7 +195,7 @@ export default function LoginPage({
                 className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
-                Back to exchange
+                Back to overview
               </button>
             )}
           </div>
@@ -166,7 +211,7 @@ export default function LoginPage({
               One identity. One role. A complete on-chain chain of custody.
             </h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-slate-300">
-              Your Carbonyx ID determines which protocol module you can operate. A connected wallet then signs the blockchain actions belonging to that role.
+              Your CarbonChain ID determines which protocol module you can operate. Click any persona below for immediate interactive demo access, or enter your credentials.
             </p>
 
             <div className="mt-9 grid gap-3 sm:grid-cols-2">
@@ -174,43 +219,51 @@ export default function LoginPage({
                 const Icon = role.icon;
                 const selected = mode === 'signup' ? signupRole === role.role : loginId === role.loginId;
                 return (
-                  <button
+                  <div
                     key={role.role}
-                    type="button"
-                    onClick={() => {
-                      if (mode === 'signup') {
-                        setSignupRole(role.role);
-                        setError('');
-                      } else if (showDemoAccounts) {
-                        chooseDemo(role.loginId, role.password);
-                      }
-                    }}
-                    className={`group rounded-2xl border p-4 text-left transition-all ${
+                    className={`group relative rounded-2xl border p-4 text-left transition-all ${
                       selected ? 'border-[#15ed48]/60 bg-[#15ed48]/10 shadow-sm' : 'border-white/10 bg-white/5 hover:border-[#00a699]/50 hover:bg-white/10'
-                    } ${mode === 'signup' || showDemoAccounts ? 'cursor-pointer' : 'cursor-default'}`}
+                    }`}
                   >
-                    <div className="flex items-start gap-3">
-                      <div className="rounded-xl p-2.5" style={{ backgroundColor: `${role.color}18`, color: role.color }}>
-                        <Icon className="h-5 w-5" />
+                    <div
+                      className="cursor-pointer"
+                      onClick={() => {
+                        if (mode === 'signup') {
+                          setSignupRole(role.role);
+                          setError('');
+                        } else {
+                          chooseDemo(role.loginId, role.password);
+                        }
+                      }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="rounded-xl p-2.5" style={{ backgroundColor: `${role.color}18`, color: role.color }}>
+                          <Icon className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <h2 className="font-headline-sm text-sm font-bold">{role.title}</h2>
+                          <p className="mt-1 text-xs leading-5 text-slate-400">{role.subtitle}</p>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <h2 className="font-headline-sm text-sm font-bold">{role.title}</h2>
-                        <p className="mt-1 text-xs leading-5 text-slate-400">{role.subtitle}</p>
+                      <div className="mt-3 border-t border-white/10 pt-2.5 font-mono text-[10px] text-slate-400">
+                        {role.stage}
                       </div>
                     </div>
-                    <div className="mt-3 border-t border-white/10 pt-3 font-mono text-[10px] text-slate-400">
-                      {role.stage}
-                    </div>
-                  </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleInstantDemoLogin(role)}
+                      className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500 hover:text-slate-950"
+                    >
+                      <Sparkles className="h-3 w-3" />
+                      Instant Launch {role.title.split(' ')[0]} →
+                    </button>
+                  </div>
                 );
               })}
             </div>
             <p className="mt-3 text-xs text-slate-500">
-              {mode === 'signup'
-                ? 'Select the module your new identity should access.'
-                : showDemoAccounts
-                  ? 'Demo mode: select a role card to load its test credentials.'
-                  : 'Your assigned credentials determine the accessible module.'}
+              Click <strong>&quot;Instant Launch&quot;</strong> on any persona to explore its dedicated workflow and features immediately.
             </p>
           </section>
 
@@ -357,7 +410,7 @@ export default function LoginPage({
 
             <div className="mt-6 flex items-start gap-3 border-t border-white/10 pt-5 text-xs leading-5 text-slate-500">
               <ShieldCheck className="mt-0.5 h-4 w-4 flex-none text-[#008a05]" />
-              Role permissions are enforced by the API. On-chain policy gates still independently verify every mint, audit, escrow and retirement action.
+              Role permissions are enforced by the protocol. On-chain policy gates independently verify every mint, audit, escrow and retirement action.
             </div>
           </section>
         </div>

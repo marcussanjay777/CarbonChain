@@ -31,7 +31,7 @@ export interface SidebarNavItem {
   badge?: number | string;
 }
 
-export const defaultCarbonyxNavItems: SidebarNavItem[] = [
+export const defaultCarbonChainNavItems: SidebarNavItem[] = [
   { id: 'overview', label: 'Overview', description: 'Network activity and controls', icon: LayoutDashboard },
   { id: 'issuer', label: 'Project Studio', description: 'Register and submit evidence', icon: Sprout },
   { id: 'my-registry', label: 'My Registry', description: 'Projects, objections and revisions', icon: Database },
@@ -73,7 +73,7 @@ export interface SidebarProps {
 export default function Sidebar({
   activeItem,
   onSelectItem,
-  navItems = defaultCarbonyxNavItems,
+  navItems = defaultCarbonChainNavItems,
   pendingApprovalCount = 0,
   onLogout
 }: SidebarProps) {

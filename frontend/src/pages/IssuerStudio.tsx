@@ -295,7 +295,7 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
       setSubmittedResult({
         projectId,
         name: projectName,
-        did: regData.did || `did:carbonyx:${developerWallet.toLowerCase()}`,
+        did: regData.did || `did:carbonchain:${developerWallet.toLowerCase()}`,
         merkleRoot: evData.merkleRoot,
         bundleId: evData.bundle?.bundle_id,
         confidenceScore: assessment?.confidence_score ?? null,
@@ -330,7 +330,7 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
       setSubmittedResult({
         projectId,
         name: projectName,
-        did: `did:carbonyx:${developerWallet.toLowerCase()}`,
+        did: `did:carbonchain:${developerWallet.toLowerCase()}`,
         merkleRoot: '0x4a9b2c7e1f8d3a6c9e0b2d4f8a1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c',
         bundleId: `bundle_${Date.now()}`,
         confidenceScore: 92,
@@ -477,9 +477,9 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
               Developer Identity (DID)
             </div>
             <div className="text-xs font-mono text-emerald-400 font-medium flex items-center gap-2">
-              did:carbonyx:{developerWallet.slice(0, 8)}...
+              did:carbonchain:{developerWallet.slice(0, 8)}...
               <button 
-                onClick={() => copyToClipboard(`did:carbonyx:${developerWallet}`)}
+                onClick={() => copyToClipboard(`did:carbonchain:${developerWallet}`)}
                 className="hover:text-white transition-colors"
                 title="Copy DID"
               >

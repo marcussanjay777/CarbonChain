@@ -1,3 +1,4 @@
+import { projectFlowStore } from '../lib/projectFlowStore';
 import React, { useState, useEffect } from 'react';
 import { 
   Globe2, 
@@ -45,19 +46,69 @@ export const BaselineExplorer: React.FC<BaselineExplorerProps> = ({
   const [challengeReason, setChallengeReason] = useState('');
   const [isSubmittingChallenge, setIsSubmittingChallenge] = useState(false);
 
+  const getFallbackBaselineProjects = () => {
+    const all = projectFlowStore.getAllProjects();
+    return all.map((p) => ({
+      project: {
+        project_id: p.id,
+        name: p.name,
+        did: p.developerDid,
+        project_type: p.projectType,
+        location: p.location,
+        claimed_annual_tonnage: p.claimedAnnualTonnage,
+        owner_address: p.developerWallet,
+        status: p.lifecycleState
+      },
+      bundle: {
+        bundle_id: `bundle_${p.id}`,
+        merkle_root: p.merkleRoot,
+        status: p.objections.length > 0 ? 'CHALLENGED' : 'COMMITTED',
+        submitted_at: p.createdAt
+      },
+      evidenceItems: [
+        {
+          source_type: 'OPERATIONAL_DOC',
+          payload: { projectCapexUsd: p.capexUsd }
+        },
+        {
+          source_type: 'IOT_SENSOR',
+          payload: { co2FluxPpm: 412, soilMoisturePct: 35.8, soilOrganicCarbonGKg: 28.4 }
+        },
+        {
+          source_type: 'SATELLITE_NDVI',
+          payload: { meanNdvi: 0.78, canopyCoveragePct: 82.5, satellite: 'Sentinel-2 Multispectral' }
+        }
+      ],
+      risk: {
+        confidence_score: p.aiConfidenceScore,
+        risk_level: p.riskLevel,
+        anomaly_flags: p.objections.length > 0 ? ['Telemetry divergence query raised by community watchdog'] : [],
+        verifier_required: p.riskLevel === 'HIGH' || p.objections.length > 0
+      },
+      challengeWindow: {
+        isOpen: p.lifecycleState === 'BASELINE_WINDOW',
+        expiresAt: new Date(new Date(p.createdAt).getTime() + 14 * 86400000).toISOString(),
+        daysRemaining: Math.max(0, 14 - Math.floor((Date.now() - new Date(p.createdAt).getTime()) / 86400000))
+      }
+    }));
+  };
+
   const fetchBaselineProjects = async () => {
     setIsLoading(true);
     try {
       const response = await apiFetch(`${backendUrl}/api/projects/baseline-explorer`);
       const data = await readApiJson<any>(response);
-      if (response.ok) {
-        setProjects(data.projects || []);
+      if (response.ok && Array.isArray(data.projects) && data.projects.length > 0) {
+        setProjects(data.projects);
+        setIsLoading(false);
+        return;
       }
     } catch (err) {
-      console.error('Error fetching baseline explorer feed:', err);
+      console.warn('Backend baseline explorer feed offline, using local store:', err);
     } finally {
       setIsLoading(false);
     }
+    setProjects(getFallbackBaselineProjects());
   };
 
   useEffect(() => {
@@ -314,7 +365,7 @@ export const BaselineExplorer: React.FC<BaselineExplorerProps> = ({
                       {p.name}
                     </h2>
                     <div className="text-xs font-mono text-slate-400 flex items-center gap-2 mt-0.5">
-                      Developer DID: <span className="text-emerald-300">{p.did || `did:carbonyx:${p.owner_address?.slice(0, 10)}...`}</span>
+                      Developer DID: <span className="text-emerald-300">{p.did || `did:carbonchain:${p.owner_address?.slice(0, 10)}...`}</span>
                       <button 
                         onClick={() => copyToClipboard(p.did || p.owner_address, p.project_id)}
                         className="hover:text-white"

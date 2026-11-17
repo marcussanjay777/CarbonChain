@@ -53,7 +53,7 @@ app.get('/health', async (_req: Request, res: Response) => {
   const status = 'HEALTHY';
   return res.status(200).json({
     status,
-    service: 'carbonyx-backend',
+    service: 'carbonchain-backend',
     timestamp: new Date().toISOString(),
     supabaseConnected,
     relayerConnected: RelayerService.isConnected(),
@@ -67,7 +67,7 @@ app.get('/health', async (_req: Request, res: Response) => {
 
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
-    console.log(`Carbonyx Backend Relayer running on http://localhost:${PORT}`);
+    console.log(`CarbonChain Backend Relayer running on http://localhost:${PORT}`);
   });
 }
 

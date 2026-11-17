@@ -325,7 +325,7 @@ export const HomePage: React.FC<HomePageProps> = ({
               </h2>
             </div>
             <p className="font-body-md text-base text-slate-900 font-medium max-w-md leading-relaxed">
-              Traditional carbon markets suffer from opacity, multi-year verification lags, and phantom issuance. Carbonyx enforces continuous automated truth.
+              Traditional carbon markets suffer from opacity, multi-year verification lags, and phantom issuance. CarbonChain enforces continuous automated truth.
             </p>
           </div>
 
@@ -337,7 +337,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <th className="py-4 px-6 font-mono-proof text-xs font-bold text-black uppercase tracking-wider">Structural Dimension</th>
                   <th className="py-4 px-6 font-mono-proof text-xs font-bold text-black uppercase tracking-wider">Legacy Voluntary Carbon Markets</th>
                   <th className="py-4 px-6 font-mono-proof text-xs font-bold text-primary uppercase tracking-wider flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-[15px]">bolt</span> Carbonyx Protocol Architecture
+                    <span className="material-symbols-outlined text-[15px]">bolt</span> CarbonChain Protocol Architecture
                   </th>
                 </tr>
               </thead>
@@ -455,7 +455,7 @@ export const HomePage: React.FC<HomePageProps> = ({
               End-to-End Execution
             </span>
             <h2 className="font-headline-lg text-3xl font-extrabold text-black">
-              How Carbonyx Works: Cryptographic Pipeline
+              How CarbonChain Works: Cryptographic Pipeline
             </h2>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -468,7 +468,7 @@ export const HomePage: React.FC<HomePageProps> = ({
               <div>
                 <h4 className="font-headline-sm text-base font-bold text-black mb-2">DID Registration</h4>
                 <p className="font-body-sm text-xs text-slate-900 font-normal mb-5 leading-relaxed">
-                  IoT sensors and satellites transmit raw telemetry bundles bound to decentralized identifiers (<code className="text-primary font-mono-proof font-semibold">did:carbonyx:iss_7f9b</code>) and hashed into SHA-256 Merkle roots.
+                  IoT sensors and satellites transmit raw telemetry bundles bound to decentralized identifiers (<code className="text-primary font-mono-proof font-semibold">did:carbonchain:iss_7f9b</code>) and hashed into SHA-256 Merkle roots.
                 </p>
               </div>
               <div className="p-2.5 rounded-lg bg-slate-100 border border-slate-300 font-mono-proof text-[11px] text-black font-semibold truncate">
@@ -540,7 +540,7 @@ export const HomePage: React.FC<HomePageProps> = ({
               Who We Serve
             </h2>
             <p className="font-body-md text-base text-slate-900 font-medium max-w-2xl">
-              Carbonyx provides tailored solutions for institutional investors, verifiers, corporate buyers, and registry stakeholders worldwide.
+              CarbonChain provides tailored solutions for institutional investors, verifiers, corporate buyers, and registry stakeholders worldwide.
             </p>
             {/* Persona Pill Navigation Matching Xpansiv */}
             <div className="flex flex-wrap items-center justify-center gap-2 mt-8">
@@ -716,7 +716,7 @@ export const HomePage: React.FC<HomePageProps> = ({
               Cryptographic Assurance at Machine Speed
             </h2>
             <p className="font-body-md text-sm md:text-base text-slate-300 leading-relaxed">
-              Carbonyx bridges physical environmental reality to EVM consensus. Ingested telemetry is passed through automated anomaly models, signed by bonded validators, and issued into verified token pools.
+              CarbonChain bridges physical environmental reality to EVM consensus. Ingested telemetry is passed through automated anomaly models, signed by bonded validators, and issued into verified token pools.
             </p>
             <div className="flex flex-col gap-3 pt-2">
               <div className="flex items-center gap-3 text-sm text-white">
@@ -753,7 +753,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <div className="w-3 h-3 rounded-full bg-rose-500/80" />
                   <div className="w-3 h-3 rounded-full bg-amber-500/80" />
                   <div className="w-3 h-3 rounded-full bg-glow-cyan/80" />
-                  <span className="ml-2 text-slate-400 text-[11px]">mrv-daemon@carbonyx-l2-node-04:~$</span>
+                  <span className="ml-2 text-slate-400 text-[11px]">mrv-daemon@carbonchain-l2-node-04:~$</span>
                 </div>
                 <span className="text-[11px] text-glow-cyan flex items-center gap-1.5 font-mono-data">
                   <span className="h-2 w-2 rounded-full bg-glow-cyan animate-pulse" />
@@ -780,7 +780,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                     <span className="text-glow-cyan">&gt;</span>
                     <div>
                       <span className="text-white font-semibold">ISSUER_DID:</span>{' '}
-                      <span className="text-glow-cyan">did:carbonyx:iss_7f9b841a0e9c</span>
+                      <span className="text-glow-cyan">did:carbonchain:iss_7f9b841a0e9c</span>
                     </div>
                   </div>
                 )}
@@ -851,7 +851,7 @@ export const HomePage: React.FC<HomePageProps> = ({
               Audited Cryptographic Infrastructure
             </h2>
             <p className="font-body-md text-base text-slate-900 font-medium mt-2">
-              Carbonyx core contracts undergo continuous fuzzing, formal invariant verification, and battle-tested penetration audits.
+              CarbonChain core contracts undergo continuous fuzzing, formal invariant verification, and battle-tested penetration audits.
             </p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -924,10 +924,10 @@ export const HomePage: React.FC<HomePageProps> = ({
               Protocol Documentation
             </span>
             <h2 className="font-display-hero text-3xl md:text-4xl font-bold text-black mb-4 leading-tight">
-              Carbonyx Whitepaper
+              CarbonChain Whitepaper
             </h2>
             <p className="font-body-lg text-base text-slate-600 max-w-2xl mx-auto leading-relaxed">
-              A deep-dive into the cryptographic architecture, economic incentive design, and regulatory alignment of the Carbonyx Multi-Source MRV Protocol.
+              A deep-dive into the cryptographic architecture, economic incentive design, and regulatory alignment of the CarbonChain Multi-Source MRV Protocol.
             </p>
           </div>
 
@@ -1101,10 +1101,10 @@ export const HomePage: React.FC<HomePageProps> = ({
               <div className="flex items-center gap-3">
                 <img
                   src="/logo.png"
-                  alt="Carbonyx Logo"
+                  alt="CarbonChain Logo"
                   className="h-8 w-8 object-contain brightness-0 invert"
                 />
-                <span className="font-headline-sm text-lg font-bold text-white tracking-wider">CARBONYX PROTOCOL</span>
+                <span className="font-headline-sm text-lg font-bold text-white tracking-wider">CARBONCHAIN PROTOCOL</span>
               </div>
               <p className="font-body-sm text-xs text-slate-400 max-w-md leading-relaxed">
                 Next-generation institutional settlement and cryptographic MRV infrastructure for environmental commodities. Ensuring immutability, zero double-counting, and real-time physical auditing for voluntary and compliance carbon instruments.
@@ -1175,7 +1175,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 
           <div className="pt-8 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-400">
             <span className="font-mono-proof text-[11px]">
-              © 2026 Carbonyx Protocol Foundation. All cryptographic rights reserved. Cryptographically anchored to Ethereum L1.
+              © 2026 CarbonChain Protocol Foundation. All cryptographic rights reserved. Cryptographically anchored to Ethereum L1.
             </span>
             <div className="flex items-center gap-6">
               <span className="font-mono-proof text-[11px] text-slate-400 hover:text-white transition-colors cursor-pointer">Terms of Settlement</span>

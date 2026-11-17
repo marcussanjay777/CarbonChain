@@ -18,7 +18,8 @@ export interface AuthSession {
   user: AuthUser;
 }
 
-const TOKEN_KEY = 'carbonyx_session_token';
+const TOKEN_KEY = 'carbonchain_session_token';
+const USER_KEY = 'carbonchain_session_user';
 
 export async function readApiJson<T = any>(response: Response): Promise<T> {
   const contentType = response.headers.get('content-type') || '';
@@ -42,8 +43,23 @@ export function saveAuthToken(token: string) {
   sessionStorage.setItem(TOKEN_KEY, token);
 }
 
+export function getStoredUser(): AuthUser | null {
+  const item = sessionStorage.getItem(USER_KEY);
+  if (!item) return null;
+  try {
+    return JSON.parse(item);
+  } catch {
+    return null;
+  }
+}
+
+export function saveStoredUser(user: AuthUser) {
+  sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
 export function clearAuthToken() {
   sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(USER_KEY);
 }
 
 export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
@@ -54,7 +70,7 @@ export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {})
   const response = await fetch(input, { ...init, headers });
   if (response.status === 401 && token) {
     clearAuthToken();
-    window.dispatchEvent(new Event('carbonyx:session-expired'));
+    window.dispatchEvent(new Event('carbonchain:session-expired'));
   }
   return response;
 }

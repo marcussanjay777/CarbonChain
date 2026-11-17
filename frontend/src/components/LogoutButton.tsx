@@ -17,7 +17,7 @@ export default function LogoutButton({
       onLogout();
     } else {
       // Fallback to firing custom event if unhooked
-      window.dispatchEvent(new CustomEvent('carbonyx:session-expired'));
+      window.dispatchEvent(new CustomEvent('carbonchain:session-expired'));
     }
   };
 

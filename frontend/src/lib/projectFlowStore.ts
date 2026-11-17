@@ -1,5 +1,5 @@
 /**
- * Carbonyx Protocol - End-to-End Lifecycle Store
+ * CarbonChain Protocol - End-to-End Lifecycle Store
  * 
  * Manages the complete multi-role lifecycle flow:
  * 1. Project Developer submits project -> enters 14-Day Baseline Observation Window
@@ -220,8 +220,8 @@ export const VERIFIER_POOL: VerifierPoolMember[] = [
   }
 ];
 
-const STORAGE_KEY = 'carbonyx_lifecycle_projects_v2';
-const NOTIF_KEY = 'carbonyx_lifecycle_notifications_v2';
+const STORAGE_KEY = 'carbonchain_lifecycle_projects_v2';
+const NOTIF_KEY = 'carbonchain_lifecycle_notifications_v2';
 
 // Seed Realistic Initial Projects
 const initialSeedProjects: LifecycleProject[] = [
@@ -232,7 +232,7 @@ const initialSeedProjects: LifecycleProject[] = [
     location: { country: 'Brazil', region: 'Acre State', coordinates: '-9.0238, -70.8120' },
     developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
     developerName: 'Amazonas BioCarbon Consórcio',
-    developerDid: 'did:carbonyx:0x627306090abab3a6e1400e9345bc60c78a8bef57',
+    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
     claimedAnnualTonnage: 50000,
     capexUsd: 1450000,
     merkleRoot: '0x4a9b2c7e1f8d3a6c9e0b2d4f8a1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c',
@@ -264,7 +264,7 @@ const initialSeedProjects: LifecycleProject[] = [
     location: { country: 'Bangladesh', region: 'Khulna Division', coordinates: '21.9497, 89.1833' },
     developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
     developerName: 'Bengal Delta Ecology Ltd',
-    developerDid: 'did:carbonyx:0x627306090abab3a6e1400e9345bc60c78a8bef57',
+    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
     claimedAnnualTonnage: 32000,
     capexUsd: 890000,
     merkleRoot: '0x7e3a9c2b4d6f8a1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c4a9b2c7e1f8d',
@@ -287,7 +287,7 @@ const initialSeedProjects: LifecycleProject[] = [
     location: { country: 'Sweden', region: 'Västerbotten', coordinates: '64.2833, 20.3000' },
     developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
     developerName: 'Scandic Carbon Removal AB',
-    developerDid: 'did:carbonyx:0x627306090abab3a6e1400e9345bc60c78a8bef57',
+    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
     claimedAnnualTonnage: 45000,
     capexUsd: 2100000,
     merkleRoot: '0x1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c4a9b2c7e1f8d3a6c9e0b2d4f8a',
@@ -315,7 +315,7 @@ const initialSeedProjects: LifecycleProject[] = [
     location: { country: 'Kenya', region: 'Nakuru County', coordinates: '-0.3031, 36.0800' },
     developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
     developerName: 'Great Rift Geothermal Clean Power Ltd',
-    developerDid: 'did:carbonyx:0x627306090abab3a6e1400e9345bc60c78a8bef57',
+    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
     claimedAnnualTonnage: 25000,
     capexUsd: 1750000,
     merkleRoot: '0x9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c4a9b2c7e1f8d3a6c9e0b2d4f8a1c3e5b7d',
@@ -361,7 +361,7 @@ const initialSeedProjects: LifecycleProject[] = [
     location: { country: 'Indonesia', region: 'Riau Province', coordinates: '0.5071, 101.4478' },
     developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
     developerName: 'PT Rimba Sumatra Lestari',
-    developerDid: 'did:carbonyx:0x627306090abab3a6e1400e9345bc60c78a8bef57',
+    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
     claimedAnnualTonnage: 60000,
     capexUsd: 2800000,
     merkleRoot: '0x5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d',
@@ -407,7 +407,7 @@ const initialSeedProjects: LifecycleProject[] = [
     location: { country: 'Chile', region: 'Magallanes', coordinates: '-53.1638, -70.9171' },
     developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
     developerName: 'Austral Wind & BioCarbon SpA',
-    developerDid: 'did:carbonyx:0x627306090abab3a6e1400e9345bc60c78a8bef57',
+    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
     claimedAnnualTonnage: 40000,
     capexUsd: 1950000,
     merkleRoot: '0x2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b',
@@ -558,7 +558,7 @@ class ProjectFlowStore {
     });
     // Also dispatch a browser window event for cross-component sync
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('carbonyx:lifecycle-update'));
+      window.dispatchEvent(new CustomEvent('carbonchain:lifecycle-update'));
     }
   }
 
@@ -650,7 +650,7 @@ class ProjectFlowStore {
       location: newProjectData.location || { country: 'Global', region: 'Protected Zone' },
       developerWallet: newProjectData.developerWallet || '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
       developerName: newProjectData.developerName || 'Registered Carbon Proponent',
-      developerDid: newProjectData.developerDid || `did:carbonyx:${newProjectData.developerWallet?.toLowerCase()}`,
+      developerDid: newProjectData.developerDid || `did:carbonchain:${newProjectData.developerWallet?.toLowerCase()}`,
       claimedAnnualTonnage: newProjectData.claimedAnnualTonnage || 10000,
       capexUsd: newProjectData.capexUsd || 500000,
       merkleRoot: newProjectData.merkleRoot || `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`,
@@ -716,6 +716,40 @@ class ProjectFlowStore {
   /**
    * 3. Verifier Rejects / Passes -> Rotates to Next Verifier in Pool (Proof of Stake)
    */
+    public addObjection(
+    projectId: string,
+    reason: string,
+    category: string = 'Public Community Challenge',
+    author: string = '0xChallenger',
+    authorOrg: string = 'Independent Environmental Watchdog'
+  ): boolean {
+    const project = this.getProjectById(projectId);
+    if (!project) return false;
+
+    const objection: ObjectionRecord = {
+      id: `OBJ-${Date.now().toString().slice(-4)}`,
+      author,
+      authorOrg,
+      reason,
+      category,
+      createdAt: new Date().toISOString(),
+      status: 'OPEN'
+    };
+
+    project.objections.unshift(objection);
+    this.saveProjects();
+
+    this.addNotification({
+      title: 'New Objection Raised',
+      message: `A community challenge was submitted for ${project.name}: "${reason.slice(0, 80)}..."`,
+      category: 'BASELINE',
+      recipientRole: 'PROJECT_PROPONENT',
+      projectId: project.id
+    });
+
+    return true;
+  }
+
   public passToNextVerifier(projectId: string, reason?: string): VerifierPoolMember | null {
     const project = this.getProjectById(projectId);
     if (
@@ -1092,7 +1126,7 @@ class ProjectFlowStore {
       verificationAttestation: {
         verifierName: project.assignedVerifier.name,
         verifierOrg: project.assignedVerifier.organization,
-        verifierDid: `did:carbonyx:${project.assignedVerifier.address.toLowerCase()}`,
+        verifierDid: `did:carbonchain:${project.assignedVerifier.address.toLowerCase()}`,
         verifierWallet: project.assignedVerifier.address,
         posStakeEth: project.verifierStakedEth || 0.5,
         posStakeTxHash: project.verifierStakeTxHash || '0xstake_pos_attestation_verified',

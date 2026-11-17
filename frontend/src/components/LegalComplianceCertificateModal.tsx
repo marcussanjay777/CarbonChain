@@ -38,7 +38,7 @@ export const LegalComplianceCertificateModal: React.FC<LegalComplianceCertificat
 
   const handlePrint = () => {
     const previousTitle = document.title;
-    document.title = `${certificate.certificateId} - Carbonyx retirement certificate`;
+    document.title = `${certificate.certificateId} - CarbonChain retirement certificate`;
     window.print();
     window.setTimeout(() => {
       document.title = previousTitle;
@@ -117,7 +117,7 @@ export const LegalComplianceCertificateModal: React.FC<LegalComplianceCertificat
               </div>
               <div>
                 <div className="text-[11px] font-mono font-black tracking-widest text-emerald-400 uppercase print:text-emerald-800">
-                  Carbonyx Global Registry & MRV Protocol
+                  CarbonChain Global Registry & MRV Protocol
                 </div>
                 <h1 id={titleId} className="font-serif text-xl font-black uppercase tracking-tight text-slate-950 sm:text-2xl">
                   Certificate of Carbon Offset Retirement
@@ -308,13 +308,13 @@ export const LegalComplianceCertificateModal: React.FC<LegalComplianceCertificat
               <div className="text-[10px] text-slate-400 print:text-slate-600 leading-tight">
                 <div>Use this reference to independently verify cryptographic</div>
                 <div>validity on the Sepolia Ethereum blockchain.</div>
-                <div className="mt-0.5 break-all font-mono text-[9px] text-emerald-800">https://carbonyx.org/verify/{certificate.certificateId}</div>
+                <div className="mt-0.5 break-all font-mono text-[9px] text-emerald-800">https://carbonchain.org/verify/{certificate.certificateId}</div>
               </div>
             </div>
 
             <div className="text-center sm:text-right space-y-1">
               <div className="font-serif italic text-sm text-emerald-300 print:text-slate-950 border-b border-emerald-500/30 pb-0.5 print:border-slate-400">
-                Carbonyx Protocol Autonomous Governance & Registry Engine
+                CarbonChain Protocol Autonomous Governance & Registry Engine
               </div>
               <div className="text-[9px] uppercase tracking-widest text-slate-500 print:text-slate-600">
                 Cryptographically Sealed on Smart Contract #0x9F42...88A1

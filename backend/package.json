@@ -1,7 +1,7 @@
 {
-  "name": "carbonyx-backend",
+  "name": "carbonchain-backend",
   "version": "1.0.0",
-  "description": "Carbonyx Backend Orchestrator and Relayer Service",
+  "description": "CarbonChain Backend Orchestrator and Relayer Service",
   "main": "dist/server.js",
   "scripts": {
     "dev": "ts-node src/server.ts",

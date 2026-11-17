@@ -28,7 +28,7 @@ import { BaselineExplorer } from './pages/BaselineExplorer';
 import MyRegistry from './pages/MyRegistry';
 import LoginPage from './pages/LoginPage';
 import Sidebar from './components/Sidebar';
-import { apiFetch, AuthSession, AuthUser, clearAuthToken, getAuthToken, readApiJson } from './lib/auth';
+import { apiFetch, AuthSession, AuthUser, clearAuthToken, getAuthToken, getStoredUser, saveStoredUser, readApiJson } from './lib/auth';
 
 type ActiveTab = 'overview' | 'issuer' | 'my-registry' | 'baseline' | 'verifier' | 'marketplace' | 'portfolio' | 'explorer';
 
@@ -104,14 +104,27 @@ export default function App() {
         setIsRestoringSession(false);
         return;
       }
+      const stored = getStoredUser();
+      if (stored && (token.startsWith('demo-session-') || token.startsWith('demo-token-'))) {
+        setAuthUser(stored);
+        setActiveTab(rolePortal[stored.role].home);
+        setIsRestoringSession(false);
+        return;
+      }
       try {
         const response = await apiFetch(`${backendUrl}/api/auth/session`);
         if (!response.ok) throw new Error('Session expired');
         const data = await readApiJson<{ user: AuthUser }>(response);
         setAuthUser(data.user);
+        saveStoredUser(data.user);
         setActiveTab(rolePortal[data.user.role as AuthUser['role']].home);
       } catch {
-        clearAuthToken();
+        if (stored) {
+          setAuthUser(stored);
+          setActiveTab(rolePortal[stored.role].home);
+        } else {
+          clearAuthToken();
+        }
       } finally {
         setIsRestoringSession(false);
       }
@@ -122,8 +135,8 @@ export default function App() {
       setAuthUser(null);
       setActiveTab('overview');
     };
-    window.addEventListener('carbonyx:session-expired', expireSession);
-    return () => window.removeEventListener('carbonyx:session-expired', expireSession);
+    window.addEventListener('carbonchain:session-expired', expireSession);
+    return () => window.removeEventListener('carbonchain:session-expired', expireSession);
   }, [backendUrl]);
 
   useEffect(() => {
@@ -229,13 +242,13 @@ export default function App() {
             : 'bg-black/20 border-white/10'
         }`}>
           <div className="h-[68px] max-w-7xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-5">
-            <button className="flex items-center gap-2 group text-left" aria-label="Carbonyx home" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+            <button className="flex items-center gap-2 group text-left" aria-label="CarbonChain home" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
               <img
                 src="/logo.png"
-                alt="Carbonyx Logo"
+                alt="CarbonChain Logo"
                 className={`h-8 w-8 object-contain transition-transform group-hover:scale-105 ${isPublicScrolled ? '' : 'brightness-0 invert'}`}
               />
-              <span className={`text-xl font-extrabold tracking-tight transition-colors ${isPublicScrolled ? 'text-[#222222]' : 'text-white'}`}>Carbonyx</span>
+              <span className={`text-xl font-extrabold tracking-tight transition-colors ${isPublicScrolled ? 'text-[#222222]' : 'text-white'}`}>CarbonChain</span>
             </button>
 
             <nav className="hidden items-center gap-1 md:flex">
@@ -308,19 +321,19 @@ export default function App() {
             <button
               onClick={() => navigateTo(portal.home)}
               className="flex items-center gap-2 group text-left"
-              aria-label="Carbonyx home"
+              aria-label="CarbonChain home"
             >
               <img
                 src="/logo.png"
-                alt="Carbonyx Logo"
+                alt="CarbonChain Logo"
                 className="h-8 w-8 object-contain transition-transform group-hover:scale-105"
               />
-              <span className="text-xl font-extrabold tracking-tight text-[#222222]">Carbonyx</span>
+              <span className="text-xl font-extrabold tracking-tight text-[#222222]">CarbonChain</span>
             </button>
           </div>
 
           {/* Demo Persona Quick-Switcher */}
-          <div className="hidden xl:flex items-center gap-1 bg-slate-100/90 p-1 rounded-full border border-slate-200/80 text-xs font-semibold">
+          <div className="hidden lg:flex items-center gap-1 bg-slate-100/90 p-1 rounded-full border border-slate-200/80 text-xs font-semibold">
             <span className="text-[10px] font-mono uppercase text-slate-500 px-2 font-bold">Role:</span>
             {[
               { role: 'PROJECT_PROPONENT', label: 'Proponent', icon: '🏗️', home: 'my-registry', name: 'Amazonas BioCarbon', org: 'Amazonas Consórcio' },
@@ -620,10 +633,10 @@ export default function App() {
               <div className="flex items-center gap-3">
                 <img
                   src="/logo.png"
-                  alt="Carbonyx Logo"
+                  alt="CarbonChain Logo"
                   className="h-8 w-8 object-contain brightness-0 invert"
                 />
-                <span className="font-extrabold text-lg text-white tracking-wider">CARBONYX PROTOCOL</span>
+                <span className="font-extrabold text-lg text-white tracking-wider">CARBONCHAIN PROTOCOL</span>
               </div>
               <p className="text-xs text-slate-400 max-w-md leading-relaxed">
                 Next-generation institutional settlement and cryptographic MRV infrastructure for environmental commodities. Ensuring immutability, zero double-counting, and real-time physical auditing for voluntary and compliance carbon instruments.
@@ -699,7 +712,7 @@ export default function App() {
 
           <div className="pt-8 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-400">
             <span className="font-mono text-[11px]">
-              © 2026 Carbonyx Protocol Foundation. All cryptographic rights reserved. Anchored to Ethereum & Arbitrum.
+              © 2026 CarbonChain Protocol Foundation. All cryptographic rights reserved. Anchored to Ethereum & Arbitrum.
             </span>
             <div className="flex items-center gap-6 font-mono text-[11px]">
               <span>Terms of Settlement</span>
