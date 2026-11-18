@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { Router, Request, Response } from 'express';
 import { supabase } from '../config/supabase';
 import { requireRoles } from '../auth/middleware';
+import { RelayerService } from '../services/relayer.service';
+import { resolveDisputeHandler } from './disputes.routes';
+import { fail } from './helpers';
 
 const router = Router();
 
@@ -27,7 +30,9 @@ router.get('/overview', requireRoles('REGULATOR_AUDITOR'), async (_req: Request,
       disputesResult,
       actionsResult,
       policiesResult,
-      watchlistResult
+      watchlistResult,
+      slashingResult,
+      escrowsResult
     ] = await Promise.all([
       supabase.from('projects').select('*').order('created_at', { ascending: false }),
       supabase.from('evidence_bundles').select('*').order('created_at', { ascending: false }),
@@ -36,10 +41,12 @@ router.get('/overview', requireRoles('REGULATOR_AUDITOR'), async (_req: Request,
       supabase.from('carbon_credit_nfts').select('*').order('created_at', { ascending: false }),
       supabase.from('verifier_stakes').select('*').order('reputation_score', { ascending: false }),
       supabase.from('project_objections').select('*').order('created_at', { ascending: false }),
-      supabase.from('disputes').select('*'),
+      supabase.from('disputes').select('*').order('created_at', { ascending: false }),
       supabase.from('regulatory_actions').select('*').order('created_at', { ascending: false }),
       supabase.from('regulator_policies').select('*').eq('policy_name', 'GLOBAL_ISSUANCE_POLICY').maybeSingle(),
-      supabase.from('regulator_watchlist').select('*').eq('regulator_user_id', auth.id).order('created_at', { ascending: false })
+      supabase.from('regulator_watchlist').select('*').eq('regulator_user_id', auth.id).order('created_at', { ascending: false }),
+      supabase.from('slashing_events').select('*').order('created_at', { ascending: false }),
+      supabase.from('escrows').select('*').order('created_at', { ascending: false })
     ]);
 
     const firstError = [projectsResult, bundlesResult, risksResult, evidenceResult, creditsResult, verifiersResult, objectionsResult, disputesResult, actionsResult, policiesResult, watchlistResult]
@@ -133,7 +140,9 @@ router.get('/overview', requireRoles('REGULATOR_AUDITOR'), async (_req: Request,
       integrityAlerts,
       actions,
       policy: policiesResult.data?.settings || DEFAULT_POLICY,
-      watchlist: watchlistResult.data || []
+      watchlist: watchlistResult.data || [],
+      slashingEvents: slashingResult.data || [],
+      escrows: escrowsResult.data || []
     });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -154,10 +163,37 @@ router.post('/actions', requireRoles('REGULATOR_AUDITOR'), async (req: Request, 
     const { data: projectCredits } = await supabase.from('carbon_credit_nfts').select('token_id,status').eq('project_id', projectId);
 
     const previousState = { projectStatus: project.status, bundleStatus: bundle?.status || null, credits: projectCredits || [] };
-    if (actionType === 'SUSPEND_PROJECT') await supabase.from('projects').update({ status: 'SUSPENDED' }).eq('project_id', projectId);
-    if (actionType === 'CLEAR_PROJECT') await supabase.from('projects').update({ status: 'ACTIVE' }).eq('project_id', projectId);
-    if (actionType === 'FREEZE_TRANSFERS') await supabase.from('carbon_credit_nfts').update({ status: 'DISPUTED' }).eq('project_id', projectId).in('status', ['ISSUED', 'TRANSFERRED', 'ESCROWED']);
-    if (actionType === 'REVOKE_CREDITS') await supabase.from('carbon_credit_nfts').update({ status: 'REVOKED' }).eq('project_id', projectId).neq('status', 'RETIRED');
+    const auth0 = res.locals.auth;
+    const txHashes: string[] = [];
+    const activeCredits = (projectCredits || []).filter((c: any) => ['ISSUED', 'TRANSFERRED', 'ESCROWED'].includes(c.status));
+    if (actionType === 'SUSPEND_PROJECT') {
+      txHashes.push(await RelayerService.setProjectStatusOnChain(projectId, 2));
+      await supabase.from('projects').update({ status: 'SUSPENDED' }).eq('project_id', projectId);
+    }
+    if (actionType === 'CLEAR_PROJECT') {
+      txHashes.push(await RelayerService.setProjectStatusOnChain(projectId, 1));
+      await supabase.from('projects').update({ status: 'ACTIVE' }).eq('project_id', projectId);
+    }
+    if (actionType === 'FREEZE_TRANSFERS' || actionType === 'REVOKE_CREDITS') {
+      // On-chain a freeze is a regulator-initiated dispute; a revocation is that dispute upheld
+      // (which also refunds any escrowed buyer and slashes the approving verifiers).
+      for (const c of activeCredits) {
+        const tokenId = Number(c.token_id);
+        txHashes.push(await RelayerService.disputeCreditOnChain(tokenId, '0x0000000000000000000000000000000000000000', String(reason).trim()));
+        const disputeId = `DSP-REG-${tokenId}-${Date.now()}`;
+        await supabase.from('disputes').insert({
+          dispute_id: disputeId,
+          token_id: tokenId,
+          initiator_address: '0x0000000000000000000000000000000000000000',
+          initiator_name: `${auth0.displayName} (Regulator)`,
+          reason: String(reason).trim(),
+          status: 'OPEN',
+          pre_dispute_status: c.status,
+          created_at: new Date().toISOString()
+        });
+        await supabase.from('carbon_credit_nfts').update({ status: 'DISPUTED' }).eq('token_id', tokenId);
+      }
+    }
     if (actionType === 'REOPEN_REVIEW' && bundle) {
       await supabase.from('evidence_bundles').update({ status: 'ANOMALOUS' }).eq('bundle_id', bundle.bundle_id);
       await supabase.from('risk_assessments').update({ verifier_required: true, auto_mint_eligible: false }).eq('bundle_id', bundle.bundle_id);
@@ -165,7 +201,9 @@ router.post('/actions', requireRoles('REGULATOR_AUDITOR'), async (req: Request, 
 
     const newState = {
       projectStatus: actionType === 'SUSPEND_PROJECT' ? 'SUSPENDED' : actionType === 'CLEAR_PROJECT' ? 'ACTIVE' : project.status,
-      enforcement: actionType
+      enforcement: actionType,
+      txHashes,
+      note: actionType === 'REVOKE_CREDITS' ? 'Credits frozen via on-chain disputes; uphold them in the dispute console to revoke, refund and slash.' : undefined
     };
     const auth = res.locals.auth;
     const actionRecord = {
@@ -181,9 +219,9 @@ router.post('/actions', requireRoles('REGULATOR_AUDITOR'), async (req: Request, 
     };
     const { data: action, error } = await supabase.from('regulatory_actions').insert(actionRecord).select().single();
     if (error) return res.status(500).json({ error: error.message });
-    return res.status(201).json({ success: true, action, message: `${actionType.replace(/_/g, ' ')} recorded successfully` });
+    return res.status(201).json({ success: true, action, txHashes, message: `${actionType.replace(/_/g, ' ')} recorded successfully` });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    return fail(res, error);
   }
 });
 
@@ -237,34 +275,6 @@ router.post('/watchlist', requireRoles('REGULATOR_AUDITOR'), async (req: Request
   }
 });
 
-router.post('/disputes/:disputeId/resolve', requireRoles('REGULATOR_AUDITOR'), async (req: Request, res: Response) => {
-  try {
-    const disputeId = String(req.params.disputeId || '');
-    const { ruling, reason } = req.body;
-    if (!['UPHELD', 'DISMISSED'].includes(ruling) || !reason || String(reason).trim().length < 10) {
-      return res.status(400).json({ error: 'A valid ruling and detailed resolution reason are required' });
-    }
-
-    const { data: dispute } = await supabase.from('disputes').select('*').eq('dispute_id', disputeId).maybeSingle();
-    if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
-    if (dispute.status !== 'OPEN') return res.status(409).json({ error: 'This dispute already has a final ruling' });
-
-    const auth = res.locals.auth;
-    const { data: resolved, error } = await supabase.from('disputes').update({
-      status: ruling,
-      resolved_by: `${auth.displayName}: ${String(reason).trim()}`,
-      resolved_at: new Date().toISOString()
-    }).eq('dispute_id', disputeId).select().single();
-    if (error) return res.status(500).json({ error: error.message });
-
-    if (ruling === 'UPHELD') {
-      await supabase.from('carbon_credit_nfts').update({ status: 'REVOKED' }).eq('token_id', dispute.token_id).neq('status', 'RETIRED');
-    }
-
-    return res.status(200).json({ success: true, dispute: resolved, message: `Dispute ${ruling.toLowerCase()} and ruling recorded` });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
-  }
-});
+router.post('/disputes/:disputeId/resolve', requireRoles('REGULATOR_AUDITOR'), resolveDisputeHandler);
 
 export default router;

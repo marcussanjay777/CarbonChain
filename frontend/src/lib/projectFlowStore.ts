@@ -1,28 +1,34 @@
 /**
- * CarbonChain Protocol - End-to-End Lifecycle Store
- * 
- * Manages the complete multi-role lifecycle flow:
- * 1. Project Developer submits project -> enters 14-Day Baseline Observation Window
- * 2. Anyone can raise objections for 14 days
- * 3. Project routes to randomized Verifier from the accredited pool
- * 4. Proof-of-Stake (PoS): Verifier must stake ETH collateral to audit. If passed/rejected, rotates to next pool verifier.
- * 5. Verifier inspects evidence, can request details, approves audit. Developer gets notified.
- * 6. ONLY Verifier can issue credits as NFTs (decides NFT count, e.g. 100 NFTs for 500 tons, upfront vs linear vesting).
- * 7. Minted NFTs assigned to Developer wallet.
- * 8. Developer sets selling price in ETH and lists NFTs on Marketplace.
- * 9. Buyer purchases NFT -> direct payment to Developer (0% platform commission).
- * 10. Buyer claims / retires NFT -> generates detailed Legal Certificate of Carbon Offset Retirement for Government/Compliance.
+ * CarbonChain Protocol - Lifecycle Store (backend + chain backed)
+ *
+ * A thin client cache over the CarbonChain API. Every getter reads the last server snapshot; every action is a
+ * real API call that executes the corresponding smart-contract transaction and then re-syncs. Nothing here is
+ * simulated: token IDs, tx hashes, Merkle roots, stakes and balances all come from the chain.
+ *
+ * Lifecycle:
+ *  1. Proponent registers project (DID + CarbonRegistry) and submits evidence (Merkle root committed on-chain)
+ *  2. AI engine scores the bundle. >= policy threshold -> credit auto-minted. Otherwise -> verifier quorum
+ *  3. Staked verifiers vote on-chain; quorum approval mints the ERC-721 credit to the proponent
+ *  4. Owner lists the credit; buyer pays into EscrowSettlement (challenge window)
+ *  5. Buyer settles (NFT + funds move) and retires (burn) -> retirement certificate
+ *  6. Any credit can be disputed; an upheld dispute revokes it, refunds the escrowed buyer and slashes verifiers 50%
  */
+import { apiFetch, readApiJson } from './auth';
+
+const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:5005';
 
 export type ProjectLifecycleState =
-  | 'BASELINE_WINDOW'        // 14-day public challenge window
-  | 'VERIFIER_PENDING_STAKE' // Routed to verifier from pool; waiting for verifier to stake ETH
-  | 'VERIFIER_AUDITING'      // Verifier staked ETH; actively auditing telemetry/evidence
-  | 'AUDITED'                // Verifier approved audit; ready for Verifier to issue credit NFTs
-  | 'CREDITS_ISSUED'         // Verifier minted NFTs to Developer; Developer sets price
-  | 'LISTED_ON_MARKETPLACE'  // Developer set price & listed on Marketplace
-  | 'PURCHASED'              // Buyer bought NFT; in buyer portfolio
-  | 'RETIRED';               // Buyer claimed/burned credit; legal document generated
+  | 'BASELINE_WINDOW'
+  | 'VERIFIER_PENDING_STAKE'
+  | 'VERIFIER_AUDITING'
+  | 'AUDITED'
+  | 'CREDITS_ISSUED'
+  | 'LISTED_ON_MARKETPLACE'
+  | 'PURCHASED'
+  | 'RETIRED'
+  | 'REJECTED'
+  | 'DISPUTED'
+  | 'REVOKED';
 
 export interface VerifierPoolMember {
   id: string;
@@ -31,9 +37,11 @@ export interface VerifierPoolMember {
   address: string;
   reputationScore: number;
   minimumStakeEth: number;
+  stakedEth?: number;
   specialization: string;
   activeAuditsCount: number;
   totalAuditedTonnage: number;
+  activeInPool?: boolean;
 }
 
 export interface ObjectionRecord {
@@ -47,6 +55,8 @@ export interface ObjectionRecord {
   developerResponse?: string;
 }
 
+export type NftStatus = 'MINTED' | 'LISTED' | 'IN_ESCROW' | 'PURCHASED' | 'RETIRED' | 'DISPUTED' | 'REVOKED';
+
 export interface CreditNftRecord {
   nftId: string;
   tokenId: number;
@@ -56,17 +66,27 @@ export interface CreditNftRecord {
   issuanceModel: 'UPFRONT' | 'LINEAR_VESTING';
   vestingMonths?: number;
   developerWallet: string;
+  currentOwner?: string;
   priceEth?: number;
   isListed: boolean;
-  status: 'MINTED' | 'LISTED' | 'PURCHASED' | 'RETIRED';
+  status: NftStatus;
   buyerAddress?: string;
   buyerOrg?: string;
   purchasedAt?: string;
   purchaseTxHash?: string;
+  escrowId?: string;
+  escrowStatus?: string;
+  releaseAfter?: string;
+  mintTxHash?: string;
   retiredAt?: string;
   burnTxHash?: string;
   retirementReason?: string;
+  beneficiaryName?: string;
+  certificateHash?: string;
   legalCertificateId?: string;
+  disputeId?: string;
+  disputeStatus?: string;
+  disputeReason?: string;
 }
 
 export interface ProtocolNotification {
@@ -74,10 +94,21 @@ export interface ProtocolNotification {
   timestamp: string;
   title: string;
   message: string;
-  category: 'BASELINE' | 'VERIFIER_STAKE' | 'AUDIT_APPROVED' | 'NFT_ISSUED' | 'LISTED' | 'PURCHASED' | 'RETIRED';
-  recipientRole: 'PROJECT_PROPONENT' | 'INDEPENDENT_VERIFIER' | 'CORPORATE_BUYER' | 'ALL';
+  category: string;
+  recipientRole: string;
   projectId: string;
+  txHash?: string;
   read: boolean;
+}
+
+export interface QuorumVote {
+  verifierAddress: string;
+  verifierName?: string;
+  approved: boolean;
+  auditNotes?: string;
+  recommendedTonnage?: number;
+  voteTxHash?: string;
+  submittedAt?: string;
 }
 
 export interface LifecycleProject {
@@ -94,17 +125,16 @@ export interface LifecycleProject {
   aiConfidenceScore: number;
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
   createdAt: string;
+  projectStatus?: string;
+  registerTxHash?: string;
 
-  // Lifecycle state
   lifecycleState: ProjectLifecycleState;
 
-  // Baseline 14-day window
   baselineStartTime: string;
   baselineDurationDays: number;
   baselineFastForwarded?: boolean;
   objections: ObjectionRecord[];
 
-  // Verifier Pool & PoS
   assignedVerifier: VerifierPoolMember;
   passedVerifierIds: string[];
   verifierStakedEth?: number;
@@ -113,7 +143,6 @@ export interface LifecycleProject {
   auditAttestationHash?: string;
   auditedAt?: string;
 
-  // Credit NFT Issuance (Verifier-exclusive)
   totalIssuedTonnage?: number;
   issuedNftCount?: number;
   tonnagePerNft?: number;
@@ -121,9 +150,25 @@ export interface LifecycleProject {
   nftIssuanceTxHash?: string;
   nfts: CreditNftRecord[];
 
-  // Developer Pricing
   listingPricePerNftEth?: number;
   isListedOnMarketplace?: boolean;
+
+  // on-chain / audit detail
+  bundleId?: string | null;
+  bundleStatus?: string | null;
+  evidenceTxHash?: string | null;
+  riskTxHash?: string | null;
+  riskExplanation?: string | null;
+  anomalyFlags?: string[];
+  verifierRequired?: boolean;
+  quorum?: { required: number; approvals: number; rejections: number; votes: QuorumVote[] };
+  evidenceRequests?: any[];
+  evidenceSummary?: {
+    iot?: { sensorId?: string; co2FluxPpm?: number; biomassKgM2?: number; soilMoisturePct?: number } | null;
+    satellite?: { meanNdvi?: number; canopyCoveragePct?: number; cloudCoverPct?: number; source?: string; snapshotHash?: string } | null;
+    financial?: { capexUsd?: number; documentName?: string; invoiceAttestationHash?: string };
+    leaves?: Array<{ sourceType: string; payloadHash: string }>;
+  };
 }
 
 export interface LegalComplianceCertificate {
@@ -131,12 +176,7 @@ export interface LegalComplianceCertificate {
   serialNumber: string;
   issuanceDate: string;
   complianceStandards: string[];
-  beneficiary: {
-    legalName: string;
-    organizationId: string;
-    jurisdiction: string;
-    walletAddress: string;
-  };
+  beneficiary: { legalName: string; organizationId: string; jurisdiction: string; walletAddress: string };
   projectDetails: {
     projectId: string;
     projectName: string;
@@ -172,397 +212,86 @@ export interface LegalComplianceCertificate {
   };
 }
 
-// Accredited Verifier Pool
-export const VERIFIER_POOL: VerifierPoolMember[] = [
-  {
-    id: 'ver-sgs-01',
-    name: 'Dr. Elena Rostova',
-    organization: 'SGS Climate Assurance & BioAudit Group',
-    address: '0x71C8F7969315d1B2c842bC7F33894E2b43b4De02',
-    reputationScore: 99,
-    minimumStakeEth: 0.5,
-    specialization: 'Forestry, Peatland & Multispectral Remote Sensing',
-    activeAuditsCount: 1,
-    totalAuditedTonnage: 420000
-  },
-  {
-    id: 'ver-eco-02',
-    name: 'Marcus Vance',
-    organization: 'EcoAudit Global Labs & MRV Verification',
-    address: '0x92Fa107F89e830eC8850C7737C8De9d7F31f99c1',
-    reputationScore: 97,
-    minimumStakeEth: 0.5,
-    specialization: 'Blue Carbon, Mangrove Restorations & Ground IoT',
-    activeAuditsCount: 2,
-    totalAuditedTonnage: 310000
-  },
-  {
-    id: 'ver-dnv-03',
-    name: 'Astrid Lindholm',
-    organization: 'DNV Climate Neutral Services Scandinavia',
-    address: '0x4B316Fec03F5E72D714cbD12521c78De1A7bF26E',
-    reputationScore: 98,
-    minimumStakeEth: 0.5,
-    specialization: 'Biochar, Soil Organic Carbon & Direct Air Capture',
-    activeAuditsCount: 0,
-    totalAuditedTonnage: 580000
-  },
-  {
-    id: 'ver-bv-04',
-    name: 'Julian Thorne',
-    organization: 'Bureau Veritas Environmental Integrity Node',
-    address: '0x3D88D1b28Af14e4b7F667527D5613A849c25F9b0',
-    reputationScore: 96,
-    minimumStakeEth: 0.5,
-    specialization: 'Methane Capture, Landfill Gas & Renewable Sinks',
-    activeAuditsCount: 1,
-    totalAuditedTonnage: 290000
-  }
-];
+/** Kept for backwards compatibility with components that import it; the live pool comes from the API. */
+export const VERIFIER_POOL: VerifierPoolMember[] = [];
 
-const STORAGE_KEY = 'carbonchain_lifecycle_projects_v2';
-const NOTIF_KEY = 'carbonchain_lifecycle_notifications_v2';
+async function api<T = any>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
+  const response = await apiFetch(`${API_URL}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+    body: init?.json !== undefined ? JSON.stringify(init.json) : init?.body
+  });
+  const data = await readApiJson<any>(response);
+  if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
+  return data as T;
+}
 
-// Seed Realistic Initial Projects
-const initialSeedProjects: LifecycleProject[] = [
-  {
-    id: 'PROJ-AMAZON-841',
-    name: 'Amazonian Peatland & Canopy Bio-Sink',
-    projectType: 'REFORESTATION',
-    location: { country: 'Brazil', region: 'Acre State', coordinates: '-9.0238, -70.8120' },
-    developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-    developerName: 'Amazonas BioCarbon Consórcio',
-    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
-    claimedAnnualTonnage: 50000,
-    capexUsd: 1450000,
-    merkleRoot: '0x4a9b2c7e1f8d3a6c9e0b2d4f8a1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c',
-    aiConfidenceScore: 92,
-    riskLevel: 'LOW',
-    createdAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-    lifecycleState: 'BASELINE_WINDOW',
-    baselineStartTime: new Date(Date.now() - 3 * 86400000).toISOString(),
-    baselineDurationDays: 14,
-    objections: [
-      {
-        id: 'OBJ-771',
-        author: '0x3c24...d710',
-        authorOrg: 'Rainforest Integrity Watchdog',
-        reason: 'Requesting satellite NDVI comparison for contiguous buffer zone during rainy season to confirm canopy density.',
-        category: 'Satellite Telemetry Verification',
-        createdAt: new Date(Date.now() - 1 * 86400000).toISOString(),
-        status: 'OPEN'
-      }
-    ],
-    assignedVerifier: VERIFIER_POOL[0],
-    passedVerifierIds: [],
-    nfts: []
-  },
-  {
-    id: 'PROJ-SUNDAR-209',
-    name: 'Sundarbans Mangrove Blue Carbon Initiative',
-    projectType: 'MANGROVE_BLUE_CARBON',
-    location: { country: 'Bangladesh', region: 'Khulna Division', coordinates: '21.9497, 89.1833' },
-    developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-    developerName: 'Bengal Delta Ecology Ltd',
-    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
-    claimedAnnualTonnage: 32000,
-    capexUsd: 890000,
-    merkleRoot: '0x7e3a9c2b4d6f8a1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c4a9b2c7e1f8d',
-    aiConfidenceScore: 89,
-    riskLevel: 'LOW',
-    createdAt: new Date(Date.now() - 15 * 86400000).toISOString(),
-    lifecycleState: 'VERIFIER_PENDING_STAKE',
-    baselineStartTime: new Date(Date.now() - 15 * 86400000).toISOString(),
-    baselineDurationDays: 14,
-    baselineFastForwarded: true,
-    objections: [],
-    assignedVerifier: VERIFIER_POOL[1],
-    passedVerifierIds: [VERIFIER_POOL[0].id],
-    nfts: []
-  },
-  {
-    id: 'PROJ-NORDIC-418',
-    name: 'Nordic Peatland & Biochar Carbon Vault',
-    projectType: 'SOIL_CARBON',
-    location: { country: 'Sweden', region: 'Västerbotten', coordinates: '64.2833, 20.3000' },
-    developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-    developerName: 'Scandic Carbon Removal AB',
-    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
-    claimedAnnualTonnage: 45000,
-    capexUsd: 2100000,
-    merkleRoot: '0x1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c4a9b2c7e1f8d3a6c9e0b2d4f8a',
-    aiConfidenceScore: 94,
-    riskLevel: 'LOW',
-    createdAt: new Date(Date.now() - 20 * 86400000).toISOString(),
-    lifecycleState: 'AUDITED',
-    baselineStartTime: new Date(Date.now() - 20 * 86400000).toISOString(),
-    baselineDurationDays: 14,
-    baselineFastForwarded: true,
-    objections: [],
-    assignedVerifier: VERIFIER_POOL[2],
-    passedVerifierIds: [],
-    verifierStakedEth: 0.5,
-    verifierStakeTxHash: '0x8f2a4c6e8b0d2f4a6c8e0b2d4f6a8c4a9b2c7e1f8d3a6c9e0b2d4f8a1c3e5b7d',
-    verifierAuditNotes: 'Ground IoT core soil organic carbon samples cross-verified with laboratory spectrometry. 100% telemetry integrity confirmed.',
-    auditAttestationHash: '0x3a6c9e0b2d4f8a1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c4a9b2c7e1f8d',
-    auditedAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-    nfts: []
-  },
-  {
-    id: 'PROJ-RIFT-512',
-    name: 'Rift Valley Geothermal & Soil Sink',
-    projectType: 'RENEWABLE_ENERGY',
-    location: { country: 'Kenya', region: 'Nakuru County', coordinates: '-0.3031, 36.0800' },
-    developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-    developerName: 'Great Rift Geothermal Clean Power Ltd',
-    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
-    claimedAnnualTonnage: 25000,
-    capexUsd: 1750000,
-    merkleRoot: '0x9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c4a9b2c7e1f8d3a6c9e0b2d4f8a1c3e5b7d',
-    aiConfidenceScore: 96,
-    riskLevel: 'LOW',
-    createdAt: new Date(Date.now() - 25 * 86400000).toISOString(),
-    lifecycleState: 'CREDITS_ISSUED',
-    baselineStartTime: new Date(Date.now() - 25 * 86400000).toISOString(),
-    baselineDurationDays: 14,
-    baselineFastForwarded: true,
-    objections: [],
-    assignedVerifier: VERIFIER_POOL[3],
-    passedVerifierIds: [],
-    verifierStakedEth: 0.5,
-    verifierStakeTxHash: '0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
-    verifierAuditNotes: 'Geothermal displace factor audited against Kenyan national grid emission factor (0.332 tCO2/MWh). Verification approved for 500 tCO2e tranche.',
-    auditAttestationHash: '0x2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c',
-    auditedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-    totalIssuedTonnage: 500,
-    issuedNftCount: 100,
-    tonnagePerNft: 5,
-    issuanceModel: 'UPFRONT',
-    nftIssuanceTxHash: '0x3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d',
-    isListedOnMarketplace: false,
-    listingPricePerNftEth: 0.045,
-    nfts: Array.from({ length: 100 }, (_, i) => ({
-      nftId: `NFT-RIFT-710${i + 1}`,
-      tokenId: 7101 + i,
-      serialNumber: `CRX-KE-2026-${7101 + i}`,
-      co2Tonnage: 5,
-      vintageYear: 2026,
-      issuanceModel: 'UPFRONT',
-      developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-      isListed: false,
-      priceEth: 0.045,
-      status: 'MINTED'
-    }))
-  },
-  {
-    id: 'PROJ-SUMATRA-307',
-    name: 'Sumatra Rainforest Canopy Restoration',
-    projectType: 'REFORESTATION',
-    location: { country: 'Indonesia', region: 'Riau Province', coordinates: '0.5071, 101.4478' },
-    developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-    developerName: 'PT Rimba Sumatra Lestari',
-    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
-    claimedAnnualTonnage: 60000,
-    capexUsd: 2800000,
-    merkleRoot: '0x5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d',
-    aiConfidenceScore: 91,
-    riskLevel: 'LOW',
-    createdAt: new Date(Date.now() - 30 * 86400000).toISOString(),
-    lifecycleState: 'LISTED_ON_MARKETPLACE',
-    baselineStartTime: new Date(Date.now() - 30 * 86400000).toISOString(),
-    baselineDurationDays: 14,
-    baselineFastForwarded: true,
-    objections: [],
-    assignedVerifier: VERIFIER_POOL[0],
-    passedVerifierIds: [],
-    verifierStakedEth: 0.5,
-    verifierStakeTxHash: '0x6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e',
-    verifierAuditNotes: 'Sentinel-2 multispectral NDVI + LiDAR measurements verified. 250 tCO2e issued in 50 NFTs.',
-    auditAttestationHash: '0x7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f',
-    auditedAt: new Date(Date.now() - 7 * 86400000).toISOString(),
-    totalIssuedTonnage: 250,
-    issuedNftCount: 50,
-    tonnagePerNft: 5,
-    issuanceModel: 'UPFRONT',
-    nftIssuanceTxHash: '0x8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a',
-    isListedOnMarketplace: true,
-    listingPricePerNftEth: 0.038,
-    nfts: Array.from({ length: 50 }, (_, i) => ({
-      nftId: `NFT-SUMATRA-820${i + 1}`,
-      tokenId: 8201 + i,
-      serialNumber: `CRX-ID-2026-${8201 + i}`,
-      co2Tonnage: 5,
-      vintageYear: 2026,
-      issuanceModel: 'UPFRONT',
-      developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-      isListed: true,
-      priceEth: 0.038,
-      status: 'LISTED'
-    }))
-  },
-  {
-    id: 'PROJ-PATAGONIA-904',
-    name: 'Patagonian Wind & Afforestation Sink',
-    projectType: 'RENEWABLE_ENERGY',
-    location: { country: 'Chile', region: 'Magallanes', coordinates: '-53.1638, -70.9171' },
-    developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-    developerName: 'Austral Wind & BioCarbon SpA',
-    developerDid: 'did:carbonchain:0x627306090abab3a6e1400e9345bc60c78a8bef57',
-    claimedAnnualTonnage: 40000,
-    capexUsd: 1950000,
-    merkleRoot: '0x2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b',
-    aiConfidenceScore: 98,
-    riskLevel: 'LOW',
-    createdAt: new Date(Date.now() - 40 * 86400000).toISOString(),
-    lifecycleState: 'LISTED_ON_MARKETPLACE',
-    baselineStartTime: new Date(Date.now() - 40 * 86400000).toISOString(),
-    baselineDurationDays: 14,
-    baselineFastForwarded: true,
-    objections: [],
-    assignedVerifier: VERIFIER_POOL[2],
-    passedVerifierIds: [],
-    verifierStakedEth: 0.5,
-    verifierStakeTxHash: '0x3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c',
-    verifierAuditNotes: 'Wind generation SCADA meters integrated with sub-metered grid feed. 100 tCO2e issued in 20 NFTs.',
-    auditAttestationHash: '0x4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d',
-    auditedAt: new Date(Date.now() - 12 * 86400000).toISOString(),
-    totalIssuedTonnage: 100,
-    issuedNftCount: 20,
-    tonnagePerNft: 5,
-    issuanceModel: 'UPFRONT',
-    nftIssuanceTxHash: '0x5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e',
-    isListedOnMarketplace: true,
-    listingPricePerNftEth: 0.05,
-    nfts: Array.from({ length: 20 }, (_, i) => ({
-      nftId: `NFT-PATA-930${i + 1}`,
-      tokenId: 9301 + i,
-      serialNumber: `CRX-CL-2026-${9301 + i}`,
-      co2Tonnage: 5,
-      vintageYear: 2026,
-      issuanceModel: 'UPFRONT',
-      developerWallet: '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-      isListed: false,
-      priceEth: 0.05,
-      status: (i < 5 ? 'RETIRED' : i < 12 ? 'PURCHASED' : 'LISTED') as any,
-      buyerAddress: '0x14dC79964da2C08b23698B3D3cc7Ca32193d9955',
-      buyerOrg: 'Microsoft Global Sustainability & Climate Tech Fund',
-      purchasedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-      purchaseTxHash: `0x7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a${i}`,
-      retiredAt: i < 5 ? new Date(Date.now() - 2 * 86400000).toISOString() : undefined,
-      burnTxHash: i < 5 ? `0x8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b${i}` : undefined,
-      retirementReason: i < 5 ? 'Scope 1 & 2 Net Zero Carbon Accounting FY2026 Compliance' : undefined,
-      legalCertificateId: i < 5 ? `CRX-LEGAL-CERT-2026-${9301 + i}` : undefined
-    }))
-  }
-];
-
-const initialNotifications: ProtocolNotification[] = [
-  {
-    id: 'notif-1',
-    timestamp: new Date(Date.now() - 2 * 3600000).toISOString(),
-    title: 'Audit Approved & Staked',
-    message: 'Dr. Elena Rostova (SGS Assurance) completed verification for Nordic Peatland & Biochar Vault. 0.5 ETH stake confirmed.',
-    category: 'AUDIT_APPROVED',
-    recipientRole: 'PROJECT_PROPONENT',
-    projectId: 'PROJ-NORDIC-418',
-    read: false
-  },
-  {
-    id: 'notif-2',
-    timestamp: new Date(Date.now() - 6 * 3600000).toISOString(),
-    title: 'Credits Minted by Verifier',
-    message: 'Verifier Julian Thorne minted 100 Credit NFTs (500 tCO2e total) to your project Rift Valley Geothermal.',
-    category: 'NFT_ISSUED',
-    recipientRole: 'PROJECT_PROPONENT',
-    projectId: 'PROJ-RIFT-512',
-    read: false
-  },
-  {
-    id: 'notif-3',
-    timestamp: new Date(Date.now() - 18 * 3600000).toISOString(),
-    title: 'Direct Purchase Settled',
-    message: 'Microsoft Global Sustainability acquired 5 credits from Patagonian Wind. 0.25 ETH transferred directly to your developer address (0% fee).',
-    category: 'PURCHASED',
-    recipientRole: 'PROJECT_PROPONENT',
-    projectId: 'PROJ-PATAGONIA-904',
-    read: false
-  }
-];
-
-// In-Memory & LocalStorage singleton store
 class ProjectFlowStore {
   private projects: LifecycleProject[] = [];
   private notifications: ProtocolNotification[] = [];
+  private readIds = new Set<string>();
   private listeners: Array<() => void> = [];
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private inflight: Promise<void> | null = null;
+  public verifierPool: VerifierPoolMember[] = [];
+  public lastError: string | null = null;
+  public loaded = false;
 
-  constructor() {
-    this.loadFromStorage();
-  }
-
-  private loadFromStorage() {
-    try {
-      const savedProjects = localStorage.getItem(STORAGE_KEY);
-      if (savedProjects) {
-        this.projects = JSON.parse(savedProjects);
-      } else {
-        this.projects = initialSeedProjects;
-        this.saveProjects();
-      }
-
-      const savedNotifs = localStorage.getItem(NOTIF_KEY);
-      if (savedNotifs) {
-        this.notifications = JSON.parse(savedNotifs);
-      } else {
-        this.notifications = initialNotifications;
-        this.saveNotifications();
-      }
-    } catch (e) {
-      console.error('Failed to load lifecycle store:', e);
-      this.projects = initialSeedProjects;
-      this.notifications = initialNotifications;
-    }
-  }
-
-  private saveProjects() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.projects));
-    } catch (e) {
-      console.error('Failed to save projects to localStorage:', e);
-    }
-    this.notify();
-  }
-
-  private saveNotifications() {
-    try {
-      localStorage.setItem(NOTIF_KEY, JSON.stringify(this.notifications));
-    } catch (e) {
-      console.error('Failed to save notifications to localStorage:', e);
-    }
-    this.notify();
-  }
+  // ------------------------------------------------------------------ sync
 
   public subscribe(listener: () => void) {
     this.listeners.push(listener);
+    if (!this.timer) {
+      void this.refresh();
+      this.timer = setInterval(() => void this.refresh(), 4000);
+    }
     return () => {
       this.listeners = this.listeners.filter((l) => l !== listener);
+      if (this.listeners.length === 0 && this.timer) {
+        clearInterval(this.timer);
+        this.timer = null;
+      }
     };
+  }
+
+  public refresh(): Promise<void> {
+    if (this.inflight) return this.inflight;
+    this.inflight = (async () => {
+      try {
+        const [life, notes] = await Promise.all([
+          api<{ projects: LifecycleProject[]; verifierPool: VerifierPoolMember[] }>('/api/lifecycle/projects'),
+          api<{ notifications: ProtocolNotification[] }>('/api/lifecycle/notifications').catch(() => ({ notifications: [] }))
+        ]);
+        this.projects = life.projects || [];
+        this.verifierPool = life.verifierPool || [];
+        this.notifications = (notes.notifications || []).map((n) => ({ ...n, read: this.readIds.has(n.id) }));
+        this.lastError = null;
+        this.loaded = true;
+      } catch (err: any) {
+        this.lastError = err?.message || 'Unable to reach the CarbonChain API';
+      } finally {
+        this.inflight = null;
+        this.notify();
+      }
+    })();
+    return this.inflight;
   }
 
   private notify() {
     this.listeners.forEach((listener) => {
-      try {
-        listener();
-      } catch (e) {
-        console.error('Listener callback error:', e);
-      }
+      try { listener(); } catch (e) { console.error('Listener callback error:', e); }
     });
-    // Also dispatch a browser window event for cross-component sync
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('carbonchain:lifecycle-update'));
-    }
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('carbonchain:lifecycle-update'));
   }
 
-  // Getters
+  private async act<T>(fn: () => Promise<T>): Promise<T> {
+    const result = await fn();
+    await this.refresh();
+    return result;
+  }
+
+  // ---------------------------------------------------------------- getters
+
   public getAllProjects(): LifecycleProject[] {
     return [...this.projects];
   }
@@ -573,529 +302,154 @@ class ProjectFlowStore {
 
   public getProjectsForDeveloper(developerWallet?: string | null): LifecycleProject[] {
     if (!developerWallet) return this.getAllProjects();
-    return this.projects.filter(
-      (p) => p.developerWallet.toLowerCase() === developerWallet.toLowerCase()
-    );
+    return this.projects.filter((p) => p.developerWallet?.toLowerCase() === developerWallet.toLowerCase());
   }
 
+  /** Bundles escalated to the verifier pool, plus ones this verifier has already decided on. */
   public getVerifierQueue(verifierAddress?: string | null): LifecycleProject[] {
-    return this.projects.filter((project) => {
-      const isActionable = ['VERIFIER_PENDING_STAKE', 'VERIFIER_AUDITING', 'AUDITED'].includes(
-        project.lifecycleState
-      );
-      if (!isActionable) return false;
-      if (!verifierAddress) return true;
-      return project.assignedVerifier.address.toLowerCase() === verifierAddress.toLowerCase();
+    const me = verifierAddress?.toLowerCase();
+    return this.projects.filter((p) => {
+      if (['VERIFIER_PENDING_STAKE', 'VERIFIER_AUDITING'].includes(p.lifecycleState)) return true;
+      return Boolean(me && p.quorum?.votes.some((v) => v.verifierAddress?.toLowerCase() === me));
     });
   }
 
   public getMarketplaceNfts(): Array<{ project: LifecycleProject; nft: CreditNftRecord }> {
     const list: Array<{ project: LifecycleProject; nft: CreditNftRecord }> = [];
-    this.projects.forEach((proj) => {
-      proj.nfts
-        .filter((nft) => nft.isListed && nft.status === 'LISTED')
-        .forEach((nft) => {
-          list.push({ project: proj, nft });
-        });
-    });
+    this.projects.forEach((project) => project.nfts.filter((n) => n.status === 'LISTED').forEach((nft) => list.push({ project, nft })));
     return list;
   }
 
+  /** Everything the buyer bought (in escrow, settled, retired, disputed or revoked). */
   public getBuyerPortfolioNfts(buyerAddress?: string | null): Array<{ project: LifecycleProject; nft: CreditNftRecord }> {
+    const me = buyerAddress?.toLowerCase();
     const list: Array<{ project: LifecycleProject; nft: CreditNftRecord }> = [];
-    this.projects.forEach((proj) => {
-      proj.nfts
-        .filter((nft) => {
-          if (!buyerAddress) return ['PURCHASED', 'RETIRED'].includes(nft.status);
-          return (
-            ['PURCHASED', 'RETIRED'].includes(nft.status) &&
-            nft.buyerAddress?.toLowerCase() === buyerAddress.toLowerCase()
-          );
-        })
-        .forEach((nft) => {
-          list.push({ project: proj, nft });
-        });
-    });
+    this.projects.forEach((project) =>
+      project.nfts
+        .filter((n) => n.buyerAddress && (!me || n.buyerAddress.toLowerCase() === me))
+        .forEach((nft) => list.push({ project, nft }))
+    );
     return list;
   }
 
   public getNotifications(recipientRole?: string): ProtocolNotification[] {
     if (!recipientRole) return this.notifications;
-    return this.notifications.filter(
-      (n) => n.recipientRole === recipientRole || n.recipientRole === 'ALL'
-    );
+    return this.notifications.filter((n) => n.recipientRole === recipientRole || n.recipientRole === 'ALL');
   }
 
   public markNotificationAsRead(id: string) {
-    const notif = this.notifications.find((n) => n.id === id);
-    if (notif) {
-      notif.read = true;
-      this.saveNotifications();
-    }
+    this.readIds.add(id);
+    const n = this.notifications.find((x) => x.id === id);
+    if (n) n.read = true;
+    this.notify();
   }
 
-  // --- Core Lifecycle Flow Actions ---
+  // ---------------------------------------------------------------- actions
 
-  /**
-   * 1. Submit Project: Enters 14-day Baseline Observation Window
-   */
-  public submitProject(newProjectData: Partial<LifecycleProject>): LifecycleProject {
-    const projectId = newProjectData.id || `PROJ-${Date.now().toString().slice(-6)}`;
-    const randomVerifier = VERIFIER_POOL[Math.floor(Math.random() * VERIFIER_POOL.length)];
-
-    const project: LifecycleProject = {
-      id: projectId,
-      name: newProjectData.name || 'New Ecosystem Bio-Sink',
-      projectType: newProjectData.projectType || 'REFORESTATION',
-      location: newProjectData.location || { country: 'Global', region: 'Protected Zone' },
-      developerWallet: newProjectData.developerWallet || '0x627306090abaB3A6e1400e9345bC60c78a8BEf57',
-      developerName: newProjectData.developerName || 'Registered Carbon Proponent',
-      developerDid: newProjectData.developerDid || `did:carbonchain:${newProjectData.developerWallet?.toLowerCase()}`,
-      claimedAnnualTonnage: newProjectData.claimedAnnualTonnage || 10000,
-      capexUsd: newProjectData.capexUsd || 500000,
-      merkleRoot: newProjectData.merkleRoot || `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`,
-      aiConfidenceScore: newProjectData.aiConfidenceScore || 92,
-      riskLevel: newProjectData.riskLevel || 'LOW',
-      createdAt: new Date().toISOString(),
-
-      lifecycleState: 'BASELINE_WINDOW',
-      baselineStartTime: new Date().toISOString(),
-      baselineDurationDays: 14,
-      objections: [],
-
-      assignedVerifier: randomVerifier,
-      passedVerifierIds: [],
-      nfts: []
-    };
-
-    this.projects.unshift(project);
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'Project In Baseline Window',
-      message: `${project.name} has been anchored and entered the 14-day public challenge window.`,
-      category: 'BASELINE',
-      recipientRole: 'PROJECT_PROPONENT',
-      projectId: project.id
-    });
-
-    return project;
+  /** Called after IssuerStudio has completed register -> evidence -> risk against the API. */
+  public submitProject(_data?: Partial<LifecycleProject>) {
+    void this.refresh();
   }
 
-  /**
-   * 2. Fast-forward / complete 14-day Baseline Window -> assigns to Verifier Pool
-   */
-  public advanceBaselineWindow(projectId: string): boolean {
-    const project = this.getProjectById(projectId);
-    if (!project || project.lifecycleState !== 'BASELINE_WINDOW') return false;
-
-    // Move to next state
-    project.lifecycleState = 'VERIFIER_PENDING_STAKE';
-    project.baselineFastForwarded = true;
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'Baseline Completed · Assigned to Verifier',
-      message: `${project.name} has successfully concluded its 14-day baseline challenge window. Assigned to ${project.assignedVerifier.name} (${project.assignedVerifier.organization}).`,
-      category: 'BASELINE',
-      recipientRole: 'PROJECT_PROPONENT',
-      projectId: project.id
-    });
-
-    this.addNotification({
-      title: 'New Verification Task Assigned',
-      message: `${project.name} has been assigned to your verification pool queue. Stake ${project.assignedVerifier.minimumStakeEth} ETH to begin audit.`,
-      category: 'VERIFIER_STAKE',
-      recipientRole: 'INDEPENDENT_VERIFIER',
-      projectId: project.id
-    });
-
-    return true;
+  public advanceBaselineWindow(projectId: string) {
+    return this.act(() => api(`/api/projects/${encodeURIComponent(projectId)}/advance-baseline`, { method: 'POST', json: {} }));
   }
 
-  /**
-   * 3. Verifier Rejects / Passes -> Rotates to Next Verifier in Pool (Proof of Stake)
-   */
-    public addObjection(
-    projectId: string,
-    reason: string,
-    category: string = 'Public Community Challenge',
-    author: string = '0xChallenger',
-    authorOrg: string = 'Independent Environmental Watchdog'
-  ): boolean {
-    const project = this.getProjectById(projectId);
-    if (!project) return false;
-
-    const objection: ObjectionRecord = {
-      id: `OBJ-${Date.now().toString().slice(-4)}`,
-      author,
-      authorOrg,
-      reason,
-      category,
-      createdAt: new Date().toISOString(),
-      status: 'OPEN'
-    };
-
-    project.objections.unshift(objection);
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'New Objection Raised',
-      message: `A community challenge was submitted for ${project.name}: "${reason.slice(0, 80)}..."`,
-      category: 'BASELINE',
-      recipientRole: 'PROJECT_PROPONENT',
-      projectId: project.id
-    });
-
-    return true;
+  public addObjection(projectId: string, reason: string, category = 'SUSPICIOUS_CLAIM', bundleId?: string | null) {
+    return this.act(() => api('/api/projects/challenge', { method: 'POST', json: { projectId, bundleId: bundleId || undefined, reason, category } }));
   }
 
-  public passToNextVerifier(projectId: string, reason?: string): VerifierPoolMember | null {
-    const project = this.getProjectById(projectId);
-    if (
-      !project ||
-      !['VERIFIER_PENDING_STAKE', 'VERIFIER_AUDITING'].includes(project.lifecycleState)
-    ) {
-      return null;
-    }
-
-    const currentVerifierId = project.assignedVerifier.id;
-    if (!project.passedVerifierIds.includes(currentVerifierId)) {
-      project.passedVerifierIds.push(currentVerifierId);
-    }
-
-    // Pick next available verifier from pool who hasn't passed yet
-    const available = VERIFIER_POOL.filter((v) => !project.passedVerifierIds.includes(v.id));
-    const nextVerifier = available.length > 0 ? available[0] : VERIFIER_POOL[0];
-
-    project.assignedVerifier = nextVerifier;
-    project.lifecycleState = 'VERIFIER_PENDING_STAKE';
-    project.verifierStakedEth = undefined;
-    project.verifierStakeTxHash = undefined;
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'Project Rotated to Next Verifier',
-      message: `Auditor passed on ${project.name}${reason ? ` (${reason})` : ''}. Re-assigned to ${nextVerifier.name} (${nextVerifier.organization}).`,
-      category: 'VERIFIER_STAKE',
-      recipientRole: 'PROJECT_PROPONENT',
-      projectId: project.id
-    });
-
-    return nextVerifier;
+  public stake(amountEth: number) {
+    return this.act(() => api<{ txHash: string; profile: any }>('/api/verifiers/stake', { method: 'POST', json: { amountEth } }));
   }
 
-  /**
-   * 4. Verifier Stakes ETH & Enters Audit Mode (PoS)
-   */
-  public stakeAndAcceptAudit(projectId: string, stakeEth: number = 0.5): boolean {
-    const project = this.getProjectById(projectId);
-    if (
-      !project ||
-      project.lifecycleState !== 'VERIFIER_PENDING_STAKE' ||
-      !Number.isFinite(stakeEth) ||
-      stakeEth < project.assignedVerifier.minimumStakeEth
-    ) {
-      return false;
-    }
-
-    project.lifecycleState = 'VERIFIER_AUDITING';
-    project.verifierStakedEth = stakeEth;
-    project.verifierStakeTxHash = `0xstake_${Math.floor(Date.now() / 1000).toString(16)}_${Math.random().toString(36).slice(2, 8)}`;
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'Verifier Staked Collateral (PoS)',
-      message: `${project.assignedVerifier.name} staked ${stakeEth} ETH in protocol escrow to audit ${project.name}.`,
-      category: 'VERIFIER_STAKE',
-      recipientRole: 'PROJECT_PROPONENT',
-      projectId: project.id
-    });
-
-    return true;
+  public getMyVerifierProfile() {
+    return api<{ wallet: string | null; profile: any; balanceEth?: string }>('/api/verifiers/me');
   }
 
-  /**
-   * 5. Verifier Audits & Approves Project
-   */
+  public requestEvidence(project: LifecycleProject, message: string) {
+    return this.act(() => api('/api/verifiers/request-evidence', { method: 'POST', json: { bundleId: project.bundleId, message, category: 'ADDITIONAL_DOCUMENTATION' } }));
+  }
+
+  /** Cast this verifier's on-chain vote. Quorum approval mints the credit automatically. */
   public completeAudit(
-    projectId: string,
-    params: {
-      notes: string;
-      confidence: number;
-      approved: boolean;
-    }
-  ): boolean {
+    project: LifecycleProject,
+    params: { notes: string; confidence: number; approved: boolean; recommendedTonnage: number; checklist: Record<string, boolean> }
+  ) {
+    return this.act(() =>
+      api<{ finalized: boolean; approved: boolean; tokenId?: number; voteTxHash: string; transactionHash?: string; quorum: any; message: string }>(
+        '/api/verifiers/verify',
+        {
+          method: 'POST',
+          json: {
+            bundleId: project.bundleId,
+            approved: params.approved,
+            auditNotes: params.notes,
+            checklist: params.checklist,
+            conflictConfirmed: true,
+            decisionConfidence: params.confidence,
+            recommendedTonnage: params.recommendedTonnage
+          }
+        }
+      )
+    );
+  }
+
+  public listNft(tokenId: number, priceEth: number) {
+    return this.act(() => api<{ txHash: string }>('/api/marketplace/list', { method: 'POST', json: { tokenId, priceEth } }));
+  }
+
+  /** Lists every unlisted credit of a project at the given price. */
+  public async listNftsOnMarketplace(projectId: string, pricePerNftEth: number) {
     const project = this.getProjectById(projectId);
-    if (!project || project.lifecycleState !== 'VERIFIER_AUDITING') return false;
-
-    if (!params.approved) {
-      // If rejected during audit, rotate to next verifier or fail
-      this.passToNextVerifier(projectId, 'Audit findings did not meet additionality standards');
-      return true;
-    }
-
-    project.lifecycleState = 'AUDITED';
-    project.verifierAuditNotes = params.notes;
-    project.auditAttestationHash = `0xaudit_${Math.floor(Date.now() / 1000).toString(16)}_${Math.random().toString(36).slice(2, 10)}`;
-    project.auditedAt = new Date().toISOString();
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'Project Audited & Verified',
-      message: `Your project ${project.name} was audited & approved by ${project.assignedVerifier.name}. Credit NFTs can now be minted!`,
-      category: 'AUDIT_APPROVED',
-      recipientRole: 'PROJECT_PROPONENT',
-      projectId: project.id
-    });
-
+    if (!project) throw new Error('Project not found');
+    const targets = project.nfts.filter((n) => ['MINTED', 'LISTED', 'PURCHASED'].includes(n.status));
+    if (targets.length === 0) throw new Error('No credits available to list');
+    for (const nft of targets) await api('/api/marketplace/list', { method: 'POST', json: { tokenId: nft.tokenId, priceEth: pricePerNftEth } });
+    await this.refresh();
     return true;
   }
 
-  /**
-   * 6. ONLY Verifier Can Issue Credits as NFTs
-   * Verifier decides:
-   * - Total approved CO2 tonnage (e.g. 500 tons)
-   * - Number of NFTs to issue (e.g. 100 NFTs = 5 tons CO2/NFT)
-   * - Issuance model (Upfront vs Linear Vesting)
-   * Minted NFTs are assigned directly to Developer's wallet!
-   */
-  public issueCreditsAsNfts(
-    projectId: string,
-    params: {
-      totalTonnage: number;
-      nftCount: number;
-      issuanceModel: 'UPFRONT' | 'LINEAR_VESTING';
-      vestingMonths?: number;
-    }
-  ): CreditNftRecord[] {
-    const project = this.getProjectById(projectId);
-    if (!project || project.lifecycleState !== 'AUDITED') return [];
-
-    const { totalTonnage, nftCount, issuanceModel, vestingMonths } = params;
-    if (
-      !Number.isFinite(totalTonnage) ||
-      !Number.isInteger(nftCount) ||
-      totalTonnage <= 0 ||
-      totalTonnage > project.claimedAnnualTonnage ||
-      nftCount <= 0 ||
-      nftCount > 500
-    ) {
-      return [];
-    }
-    const tonnagePerNft = Number((totalTonnage / nftCount).toFixed(2));
-    const startTokenId = 5000 + Math.floor(Math.random() * 4000);
-    const txHash = `0xmint_nfts_${Date.now().toString(16)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    const newNfts: CreditNftRecord[] = Array.from({ length: nftCount }, (_, i) => ({
-      nftId: `NFT-${project.id.slice(5, 10)}-${startTokenId + i}`,
-      tokenId: startTokenId + i,
-      serialNumber: `CRX-${project.location.country.slice(0, 2).toUpperCase()}-2026-${startTokenId + i}`,
-      co2Tonnage: tonnagePerNft,
-      vintageYear: 2026,
-      issuanceModel,
-      vestingMonths: issuanceModel === 'LINEAR_VESTING' ? vestingMonths || 12 : undefined,
-      developerWallet: project.developerWallet,
-      isListed: false,
-      priceEth: 0.045, // default suggested price
-      status: 'MINTED'
-    }));
-
-    project.lifecycleState = 'CREDITS_ISSUED';
-    project.totalIssuedTonnage = totalTonnage;
-    project.issuedNftCount = nftCount;
-    project.tonnagePerNft = tonnagePerNft;
-    project.issuanceModel = issuanceModel;
-    project.nftIssuanceTxHash = txHash;
-    project.nfts = newNfts;
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'Carbon Credit NFTs Minted & Issued',
-      message: `${project.assignedVerifier.name} minted ${nftCount} NFTs (${totalTonnage} tCO2e total, ${tonnagePerNft} tCO2e/NFT) directly to your developer wallet. You can now set pricing and list on the marketplace.`,
-      category: 'NFT_ISSUED',
-      recipientRole: 'PROJECT_PROPONENT',
-      projectId: project.id
-    });
-
-    return newNfts;
+  public buyCreditNft(_projectId: string, tokenId: number) {
+    return this.act(() => api<{ escrowId: string; txHash: string; releaseAfter: number }>('/api/marketplace/escrow/buy', { method: 'POST', json: { tokenId } }));
   }
 
-  /**
-   * 7. Developer Sets Price & Lists NFTs on Marketplace
-   */
-  public listNftsOnMarketplace(projectId: string, pricePerNftEth: number): boolean {
-    const project = this.getProjectById(projectId);
-    if (
-      !project ||
-      !['CREDITS_ISSUED', 'LISTED_ON_MARKETPLACE'].includes(project.lifecycleState) ||
-      !Number.isFinite(pricePerNftEth) ||
-      pricePerNftEth <= 0
-    ) {
-      return false;
-    }
-
-    project.listingPricePerNftEth = pricePerNftEth;
-    project.isListedOnMarketplace = true;
-    project.lifecycleState = 'LISTED_ON_MARKETPLACE';
-
-    project.nfts.forEach((nft) => {
-      if (nft.status === 'MINTED' || nft.status === 'LISTED') {
-        nft.status = 'LISTED';
-        nft.isListed = true;
-        nft.priceEth = pricePerNftEth;
-      }
-    });
-
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'Credits Listed on Marketplace',
-      message: `${project.nfts.filter((n) => n.isListed).length} Carbon Credit NFTs from ${project.name} are now live on Marketplace at ${pricePerNftEth} ETH each. (Direct settlement · 0% protocol fee).`,
-      category: 'LISTED',
-      recipientRole: 'PROJECT_PROPONENT',
-      projectId: project.id
-    });
-
-    return true;
+  public releaseEscrow(escrowId: string) {
+    return this.act(() => api<{ txHash: string }>('/api/marketplace/escrow/release', { method: 'POST', json: { escrowId } }));
   }
 
-  /**
-   * 8. Buyer Buys NFT -> Direct Payment from Buyer to Developer (0% platform cut)
-   */
-  public buyCreditNft(
+  public raiseDispute(tokenId: number, reason: string) {
+    return this.act(() => api<{ dispute: any; txHash: string }>('/api/disputes/raise', { method: 'POST', json: { tokenId, reason } }));
+  }
+
+  public async retireCreditNft(
     projectId: string,
     tokenId: number,
-    buyer: { address: string; organizationName: string }
-  ): CreditNftRecord | null {
+    params: { retirementReason: string; beneficiaryLegalName: string; beneficiaryJurisdiction?: string }
+  ): Promise<LegalComplianceCertificate> {
+    const result = await api<{ burnTxHash: string; certificate: any; certificateHash: string }>('/api/marketplace/retire', {
+      method: 'POST',
+      json: { tokenId, retirementReason: params.retirementReason, beneficiaryLegalName: params.beneficiaryLegalName }
+    });
+    await this.refresh();
     const project = this.getProjectById(projectId);
-    if (!project) return null;
-
-    const nft = project.nfts.find((n) => n.tokenId === tokenId);
-    if (
-      !nft ||
-      nft.status !== 'LISTED' ||
-      !nft.isListed ||
-      !nft.priceEth ||
-      nft.priceEth <= 0 ||
-      !buyer.address.trim() ||
-      !buyer.organizationName.trim()
-    ) {
-      return null;
-    }
-
-    const purchaseTx = `0xsettle_p2p_${Date.now().toString(16)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    nft.status = 'PURCHASED';
-    nft.isListed = false;
-    nft.buyerAddress = buyer.address;
-    nft.buyerOrg = buyer.organizationName;
-    nft.purchasedAt = new Date().toISOString();
-    nft.purchaseTxHash = purchaseTx;
-
-    // Check if all are purchased
-    const anyRemaining = project.nfts.some((n) => n.status === 'LISTED');
-    if (!anyRemaining) {
-      project.lifecycleState = 'PURCHASED';
-    }
-
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'Credit Sold · Direct Settlement',
-      message: `${buyer.organizationName} bought NFT #${nft.tokenId} for ${nft.priceEth} ETH. 100% of funds sent directly to your wallet ${project.developerWallet.slice(0, 8)}...`,
-      category: 'PURCHASED',
-      recipientRole: 'PROJECT_PROPONENT',
-      projectId: project.id
-    });
-
-    this.addNotification({
-      title: 'Carbon Credit NFT Acquired',
-      message: `You acquired ${nft.co2Tonnage} tCO2e (NFT #${nft.tokenId}) from ${project.name}. Available in your portfolio to hold or retire.`,
-      category: 'PURCHASED',
-      recipientRole: 'CORPORATE_BUYER',
-      projectId: project.id
-    });
-
-    return nft;
+    const nft = project?.nfts.find((n) => n.tokenId === tokenId);
+    if (!project || !nft) throw new Error('Retired credit not found after sync');
+    return this.generateLegalDocument(project, { ...nft, burnTxHash: result.burnTxHash }, params);
   }
 
-  /**
-   * 9. Buyer Claims / Retires NFT -> Generates Detailed Legal Compliance Document
-   */
-  public retireCreditNft(
-    projectId: string,
-    tokenId: number,
-    params: {
-      retirementReason: string;
-      beneficiaryLegalName: string;
-      beneficiaryJurisdiction?: string;
-    }
-  ): LegalComplianceCertificate | null {
-    const project = this.getProjectById(projectId);
-    if (!project) return null;
-
-    const nft = project.nfts.find((n) => n.tokenId === tokenId);
-    if (
-      !nft ||
-      nft.status !== 'PURCHASED' ||
-      !params.beneficiaryLegalName.trim() ||
-      !params.retirementReason.trim()
-    ) {
-      return null;
-    }
-
-    const burnTx = `0xburn_permanent_${Date.now().toString(16)}_${Math.random().toString(36).slice(2, 8)}`;
-    const certId = `CRX-LEGAL-CERT-2026-${nft.tokenId}`;
-
-    nft.status = 'RETIRED';
-    nft.retiredAt = new Date().toISOString();
-    nft.burnTxHash = burnTx;
-    nft.retirementReason = params.retirementReason;
-    nft.legalCertificateId = certId;
-
-    const hasListedCredits = project.nfts.some((credit) => credit.status === 'LISTED');
-    const hasPurchasedCredits = project.nfts.some((credit) => credit.status === 'PURCHASED');
-    project.lifecycleState = hasListedCredits
-      ? 'LISTED_ON_MARKETPLACE'
-      : hasPurchasedCredits
-        ? 'PURCHASED'
-        : 'RETIRED';
-    this.saveProjects();
-
-    this.addNotification({
-      title: 'Carbon Offset Retired On-Chain',
-      message: `Certificate ${certId} generated for ${params.beneficiaryLegalName}. ${nft.co2Tonnage} tCO2e permanently taken out of circulation.`,
-      category: 'RETIRED',
-      recipientRole: 'CORPORATE_BUYER',
-      projectId: project.id
-    });
-
-    return this.generateLegalDocument(project, nft, params);
-  }
-
-  /**
-   * 10. Generate Official Legal & Government Compliance Document
-   */
+  /** Retirement certificate built only from on-chain facts (token, Merkle root, burn tx, verifier votes). */
   public generateLegalDocument(
     project: LifecycleProject,
     nft: CreditNftRecord,
-    params?: {
-      retirementReason?: string;
-      beneficiaryLegalName?: string;
-      beneficiaryJurisdiction?: string;
-    }
+    params?: { retirementReason?: string; beneficiaryLegalName?: string; beneficiaryJurisdiction?: string }
   ): LegalComplianceCertificate {
-    const certId = nft.legalCertificateId || `CRX-LEGAL-CERT-2026-${nft.tokenId}`;
-    const beneficiaryName =
-      params?.beneficiaryLegalName || nft.buyerOrg || 'Enterprise ESG Compliance Entity';
-    const jurisdiction = params?.beneficiaryJurisdiction || 'United States / Delaware & Global Scope';
-    const reason =
-      params?.retirementReason || nft.retirementReason || 'Scope 1 & 2 Corporate Greenhouse Gas Neutrality';
-    const stableEntityNumber = Array.from(`${beneficiaryName}:${nft.tokenId}`).reduce(
-      (value, character) => (value * 31 + character.charCodeAt(0)) % 900000,
-      0
-    ) + 100000;
+    const certId = nft.legalCertificateId || `CRX-RETIRE-${nft.tokenId}`;
+    const beneficiaryName = params?.beneficiaryLegalName || nft.beneficiaryName || nft.buyerOrg || 'Beneficiary';
+    const jurisdiction = params?.beneficiaryJurisdiction || 'Global Scope';
+    const reason = params?.retirementReason || nft.retirementReason || 'Voluntary GHG neutralisation';
+    const approver = project.quorum?.votes.find((v) => v.approved);
+    const verifier = this.verifierPool.find((v) => v.address.toLowerCase() === approver?.verifierAddress?.toLowerCase());
 
     return {
       certificateId: certId,
@@ -1103,16 +457,14 @@ class ProjectFlowStore {
       issuanceDate: nft.retiredAt || new Date().toISOString(),
       complianceStandards: [
         'UNFCCC Article 6.2 & 6.4 (International Mitigation Compliance)',
-        'ISO 14064-3:2019 (Specification with Guidance for the Verification of GHG Assertions)',
-        'EU Corporate Sustainability Reporting Directive (CSRD / ESRS E1)',
-        'US SEC Climate-Related Disclosures (Regulation S-K / Scope 1-3 Offsets)',
+        'ISO 14064-3:2019 (Verification of GHG Assertions)',
         'GHG Protocol Corporate Accounting and Reporting Standard'
       ],
       beneficiary: {
         legalName: beneficiaryName,
-        organizationId: `CRX-ENTITY-${stableEntityNumber}`,
+        organizationId: nft.certificateHash ? `SHA256:${nft.certificateHash.slice(2, 18)}` : `CRX-${nft.tokenId}`,
         jurisdiction,
-        walletAddress: nft.buyerAddress || '0x14dC79964da2C08b23698B3D3cc7Ca32193d9955'
+        walletAddress: nft.currentOwner || nft.buyerAddress || ''
       },
       projectDetails: {
         projectId: project.id,
@@ -1121,50 +473,38 @@ class ProjectFlowStore {
         developerDid: project.developerDid,
         developerName: project.developerName,
         developerWallet: project.developerWallet,
-        location: `${project.location.region}, ${project.location.country} (${project.location.coordinates || 'GPS Locked'})`
+        location: `${project.location.region}, ${project.location.country}${project.location.coordinates ? ` (${project.location.coordinates})` : ''}`
       },
       verificationAttestation: {
-        verifierName: project.assignedVerifier.name,
-        verifierOrg: project.assignedVerifier.organization,
-        verifierDid: `did:carbonchain:${project.assignedVerifier.address.toLowerCase()}`,
-        verifierWallet: project.assignedVerifier.address,
-        posStakeEth: project.verifierStakedEth || 0.5,
-        posStakeTxHash: project.verifierStakeTxHash || '0xstake_pos_attestation_verified',
-        auditReportDigest: project.auditAttestationHash || '0xaudit_cryptographic_digest_anchored'
+        verifierName: approver ? (verifier?.name || approver.verifierName || 'Independent verifier') : 'AI policy gate (auto-issued)',
+        verifierOrg: approver ? (verifier?.organization || 'Verifier pool') : `Confidence ${project.aiConfidenceScore}% >= policy threshold`,
+        verifierDid: approver ? `did:carbonyx:${approver.verifierAddress.toLowerCase()}` : 'n/a',
+        verifierWallet: approver?.verifierAddress || 'n/a',
+        posStakeEth: verifier?.stakedEth || 0,
+        posStakeTxHash: approver?.voteTxHash || project.riskTxHash || '',
+        auditReportDigest: project.auditAttestationHash || project.riskTxHash || ''
       },
       carbonAccounting: {
         metricTonsCo2e: nft.co2Tonnage,
         vintageYear: nft.vintageYear,
         serializedNftId: `#${nft.tokenId} (${nft.serialNumber})`,
-        issuanceModel: nft.issuanceModel === 'UPFRONT' ? 'Upfront Certified Removal' : 'Linear Vintage Vesting',
+        issuanceModel: 'Single ERC-721 credit per verified evidence bundle',
         retirementPurpose: reason,
         merkleRootCommitment: project.merkleRoot,
-        onChainBurnTx: nft.burnTxHash || '0xburn_permanent_ledger_record'
+        onChainBurnTx: nft.burnTxHash || ''
       },
       legalClauses: {
         nonDuplicationClause:
-          'The issuing authority and protocol smart contract guarantee that the greenhouse gas reductions certified herein have been permanently retired, serialized, and burned on-chain. These credits cannot be sold, transferred, recycled, or claimed by any party other than the designated beneficiary.',
+          'The credit certified herein was burned on-chain by its owner. The ERC-721 token no longer exists and cannot be sold, transferred or retired again.',
         additionalityClause:
-          'Multi-source environmental telemetry (ground IoT, Sentinel-2 multispectral vegetation index, and audited financial capital expenditures) has verified that the carbon sequestration would not have occurred in the counterfactual absence of this project.',
+          'Ground IoT, Sentinel-2 NDVI and financial evidence were hashed into a SHA-256 Merkle tree whose root is committed in CarbonRegistry; any item can be proven against that root.',
         directSettlementDeclaration:
-          'Financial consideration for this carbon credit was transferred peer-to-peer directly from the corporate buyer to the project developer’s wallet without intermediary protocol commission, maintaining unencumbered legal title.',
+          'Payment was held in the EscrowSettlement contract during the challenge window and released to the seller only after acceptance, with automatic refund on an upheld dispute.',
         statutoryComplianceNotice:
-          'This cryptographic instrument constitutes an official, verifiable proof of voluntary GHG reduction for submission to tax authorities, environmental regulators, and ESG audit committees under applicable environmental governance statutes.'
+          'This document summarises verifiable on-chain records. Independent parties can check every hash above against the public chain.'
       }
     };
   }
-
-  private addNotification(data: Omit<ProtocolNotification, 'id' | 'timestamp' | 'read'>) {
-    const notif: ProtocolNotification = {
-      id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      timestamp: new Date().toISOString(),
-      read: false,
-      ...data
-    };
-    this.notifications.unshift(notif);
-    this.saveNotifications();
-  }
 }
 
-// Global Singleton Instance
 export const projectFlowStore = new ProjectFlowStore();

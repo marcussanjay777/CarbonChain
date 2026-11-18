@@ -5,6 +5,7 @@ import { RelayerService } from '../services/relayer.service';
 import { requireRoles } from '../auth/middleware';
 import { isAddress } from 'ethers';
 import { randomUUID } from 'node:crypto';
+import { fail, notify, walletFor } from './helpers';
 
 const router = Router();
 const PROJECT_TYPES = [
@@ -397,62 +398,94 @@ router.post('/objections/:objectionId/respond', requireRoles('PROJECT_PROPONENT'
   }
 });
 
-// POST /api/projects/register - Register new carbon project & generate DID
+// POST /api/projects/register - Register new carbon project, mint DID and anchor it on-chain
 router.post('/register', requireRoles('PROJECT_PROPONENT'), async (req: Request, res: Response) => {
   try {
     const { projectId, name, projectType, location, claimedAnnualTonnage, ownerAddress, kycPassportData } = req.body;
+    const auth = res.locals.auth;
+    const wallet = walletFor(res, ownerAddress);
 
-    if (!projectId || !name || !ownerAddress) {
-      return res.status(400).json({ error: 'projectId, name, and ownerAddress are required' });
+    if (!projectId || !name) {
+      return res.status(400).json({ error: 'projectId and name are required' });
     }
-    if (!isAddress(ownerAddress)) {
-      return res.status(400).json({ error: 'ownerAddress must be a valid Ethereum address' });
+    if (!wallet) {
+      return res.status(400).json({ error: 'A valid wallet address is required (bind a wallet to your account or send ownerAddress)' });
     }
 
-    const did = CryptographicService.generateDID(ownerAddress);
-    const kycAttestationHash = CryptographicService.hashPayload(kycPassportData || { owner: ownerAddress, timestamp: Date.now() });
+    const { data: existing } = await supabase.from('projects').select('*').eq('project_id', projectId).maybeSingle();
+    if (existing) {
+      if (existing.created_by_user_id && existing.created_by_user_id !== auth.id) {
+        return res.status(409).json({ error: 'This project ID is already registered by another proponent' });
+      }
+      return res.status(200).json({ project: existing, did: existing.did, message: 'Project already registered' });
+    }
+
+    const did = CryptographicService.generateDID(wallet);
+    const kycAttestationHash = CryptographicService.hashPayload(kycPassportData || { owner: wallet, projectId });
+
+    // Chain first: a project must never exist off-chain without its on-chain anchor.
+    const txHash = await RelayerService.registerProjectOnChain(projectId, wallet, did, kycAttestationHash);
 
     const { data: project, error: dbError } = await supabase
       .from('projects')
       .insert({
         project_id: projectId,
-        created_by_user_id: res.locals.auth.id,
+        created_by_user_id: auth.id,
         did,
-        owner_address: ownerAddress,
+        owner_address: wallet,
         name,
         project_type: projectType || 'REFORESTATION',
         location: location || { country: 'Global', region: 'Default' },
-        claimed_annual_tonnage: claimedAnnualTonnage || 1000,
+        claimed_annual_tonnage: Number(claimedAnnualTonnage) || 1000,
         kyc_status: 'VERIFIED',
         kyc_attestation_hash: kycAttestationHash,
+        register_tx_hash: txHash,
         status: 'ACTIVE'
       })
       .select()
       .single();
+    if (dbError) return res.status(500).json({ error: dbError.message });
 
-    if (dbError) {
-      if (dbError.code === '23505') {
-        const { data: existing } = await supabase.from('projects').select('*').eq('project_id', projectId).single();
-        return res.status(200).json({ project: existing, did: existing?.did || did, message: 'Project already registered' });
-      }
-      return res.status(500).json({ error: dbError.message });
-    }
-
-    const txHash = await RelayerService.registerProjectOnChain(
+    await notify({
+      title: 'Project Registered On-Chain',
+      message: `${name} was anchored in CarbonRegistry and entered the public baseline challenge window.`,
+      category: 'BASELINE',
+      recipientRole: 'PROJECT_PROPONENT',
       projectId,
-      did,
-      kycAttestationHash
-    );
-
-    return res.status(201).json({
-      success: true,
-      project,
-      did,
-      txHash,
-      message: 'Project registered and DID created successfully'
+      txHash
     });
+
+    return res.status(201).json({ success: true, project, did, txHash, message: 'Project registered and DID created successfully' });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    return fail(res, error);
+  }
+});
+
+// POST /api/projects/:projectId/advance-baseline - Close the public challenge window (demo fast-forward)
+router.post('/:projectId/advance-baseline', requireRoles('PROJECT_PROPONENT', 'REGULATOR_AUDITOR'), async (req: Request, res: Response) => {
+  try {
+    const { projectId } = req.params;
+    const auth = res.locals.auth;
+    const { data: project } = await supabase.from('projects').select('*').eq('project_id', projectId).maybeSingle();
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (auth.role === 'PROJECT_PROPONENT' && project.created_by_user_id !== auth.id) {
+      return res.status(403).json({ error: 'Only the project proponent can advance this project' });
+    }
+    const { data: openObjections } = await supabase.from('project_objections').select('objection_id').eq('project_id', projectId).eq('status', 'OPEN');
+    if ((openObjections || []).length > 0) {
+      return res.status(409).json({ error: 'Open objections must be answered before the baseline window can close' });
+    }
+    await supabase.from('projects').update({ baseline_closed_at: new Date().toISOString(), status: 'ACTIVE' }).eq('project_id', projectId);
+    await notify({
+      title: 'Baseline Window Closed',
+      message: `${project.name} concluded its public challenge window and is now eligible for verifier review.`,
+      category: 'BASELINE',
+      recipientRole: 'ALL',
+      projectId: String(projectId)
+    });
+    return res.status(200).json({ success: true, projectId });
+  } catch (error: any) {
+    return fail(res, error);
   }
 });
 

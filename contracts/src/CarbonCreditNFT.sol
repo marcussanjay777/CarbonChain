@@ -37,6 +37,8 @@ contract CarbonCreditNFT is ERC721, Ownable, ICarbonCreditNFT {
     error CreditAlreadyRetired(uint256 tokenId);
     error CreditRevoked(uint256 tokenId);
     error InvalidTokenId(uint256 tokenId);
+    error TransferLocked(uint256 tokenId);
+    error CreditNotRetirable(uint256 tokenId);
 
     modifier onlyRegistry() {
         if (msg.sender != registry && msg.sender != owner()) {
@@ -91,6 +93,24 @@ contract CarbonCreditNFT is ERC721, Ownable, ICarbonCreditNFT {
         return tokenId;
     }
 
+    /// @dev Only the escrow contract may move a credit that is ESCROWED / DISPUTED / REVOKED.
+    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
+        address from = _ownerOf(tokenId);
+        if (from != address(0) && to != address(0) && msg.sender != escrowContract) {
+            CreditStatus s = _credits[tokenId].status;
+            if (s == CreditStatus.ESCROWED || s == CreditStatus.DISPUTED || s == CreditStatus.REVOKED) {
+                revert TransferLocked(tokenId);
+            }
+        }
+        return super._update(to, tokenId, auth);
+    }
+
+    /// @notice Settlement transfer executed by the escrow contract without requiring seller approval.
+    function escrowTransfer(address from, address to, uint256 tokenId) external {
+        if (msg.sender != escrowContract) revert UnauthorizedCaller(msg.sender);
+        _transfer(from, to, tokenId);
+    }
+
     function setCreditStatus(uint256 tokenId, CreditStatus newStatus) external onlyRegistryOrEscrow {
         if (_ownerOf(tokenId) == address(0) && _credits[tokenId].status != CreditStatus.RETIRED) {
             revert InvalidTokenId(tokenId);
@@ -120,6 +140,9 @@ contract CarbonCreditNFT is ERC721, Ownable, ICarbonCreditNFT {
         }
         if (credit.status == CreditStatus.REVOKED) {
             revert CreditRevoked(tokenId);
+        }
+        if (credit.status != CreditStatus.ISSUED && credit.status != CreditStatus.TRANSFERRED) {
+            revert CreditNotRetirable(tokenId);
         }
 
         credit.status = CreditStatus.RETIRED;

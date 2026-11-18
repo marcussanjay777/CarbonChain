@@ -11,31 +11,27 @@ contract DeployScript is Script {
     function setUp() public {}
 
     function run() public {
-        uint256 deployerPrivateKey = vm.envOr("PRIVATE_KEY", uint256(0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80));
+        // Default key is Anvil account #0 (public dev key) - override with PRIVATE_KEY for any real network.
+        uint256 deployerPrivateKey = vm.envOr(
+            "PRIVATE_KEY",
+            uint256(0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80)
+        );
         address deployer = vm.addr(deployerPrivateKey);
+        address treasury = vm.envOr("TREASURY_ADDRESS", deployer);
+        // Short windows so the escrow-refund and unstake-lock behaviour can be shown live.
+        uint256 challengeWindow = vm.envOr("CHALLENGE_WINDOW_SECONDS", uint256(120));
+        uint256 stakeLock = vm.envOr("STAKE_LOCK_SECONDS", uint256(300));
 
-        console.log("=== Deploying Carbonyx Protocol Contracts (Phase C3) ===");
-        console.log("Deployer address:", deployer);
+        console.log("=== Deploying Carbonyx Protocol ===");
+        console.log("Deployer / relayer:", deployer);
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // 1. Deploy CarbonCreditNFT
         CarbonCreditNFT nft = new CarbonCreditNFT("Carbonyx Verified Carbon Credit", "CARBX");
-        console.log("CarbonCreditNFT deployed at:", address(nft));
-
-        // 2. Deploy VerifierStakingLedger
         VerifierStakingLedger staking = new VerifierStakingLedger();
-        console.log("VerifierStakingLedger deployed at:", address(staking));
-
-        // 3. Deploy EscrowSettlement
         EscrowSettlement escrow = new EscrowSettlement();
-        console.log("EscrowSettlement deployed at:", address(escrow));
-
-        // 4. Deploy CarbonRegistry
         CarbonRegistry registry = new CarbonRegistry();
-        console.log("CarbonRegistry deployed at:", address(registry));
 
-        // 5. Interlink Contracts
         registry.setCarbonCreditNFT(address(nft));
         registry.setVerifierStakingLedger(address(staking));
         registry.setEscrowSettlement(address(escrow));
@@ -45,12 +41,21 @@ contract DeployScript is Script {
         nft.setEscrowContract(address(escrow));
 
         staking.setRegistry(address(registry));
+        staking.setTreasury(treasury);
+        staking.setLockPeriod(stakeLock);
 
         escrow.setRegistry(address(registry));
         escrow.setCarbonCreditNFT(address(nft));
-
-        console.log("All 4 Protocol Contracts linked and configured successfully!");
+        escrow.setChallengeWindow(challengeWindow);
 
         vm.stopBroadcast();
+
+        console.log("CarbonCreditNFT:", address(nft));
+        console.log("VerifierStakingLedger:", address(staking));
+        console.log("EscrowSettlement:", address(escrow));
+        console.log("CarbonRegistry:", address(registry));
+        console.log("Treasury:", treasury);
+        console.log("Challenge window (s):", challengeWindow);
+        console.log("Stake lock (s):", stakeLock);
     }
 }

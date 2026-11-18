@@ -2,8 +2,9 @@ import { Router, Request, Response } from 'express';
 import { supabase } from '../config/supabase';
 import { CryptographicService } from '../services/cryptographic.service';
 import { RelayerService } from '../services/relayer.service';
-import { requireRoles } from '../auth/middleware';
+import { authenticate, requireRoles } from '../auth/middleware';
 import { isAddress } from 'ethers';
+import { fail } from './helpers';
 
 const router = Router();
 
@@ -60,6 +61,7 @@ router.post('/mint', requireRoles('PROJECT_PROPONENT'), async (req: Request, res
         co2_tonnage: tonnage,
         vintage_year: vintage,
         merkle_root: bundle.merkle_root,
+        mint_tx_hash: txHash,
         status: 'ISSUED'
       })
       .select()
@@ -80,11 +82,11 @@ router.post('/mint', requireRoles('PROJECT_PROPONENT'), async (req: Request, res
       message: 'Carbon credit ERC-721 token minted successfully'
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    return fail(res, error);
   }
 });
 
-router.get('/', async (_req: Request, res: Response) => {
+router.get('/', authenticate, async (_req: Request, res: Response) => {
   try {
     const { data: credits, error } = await supabase.from('carbon_credit_nfts').select('*').order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });

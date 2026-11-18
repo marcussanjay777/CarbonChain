@@ -12,6 +12,7 @@ interface ICarbonCreditNFT is IERC721 {
 
     function mint(address recipient, bytes32 projectId, bytes32 bundleId, bytes32 merkleRoot, uint256 tonnage, uint16 vintage) external returns (uint256);
     function setCreditStatus(uint256 tokenId, CreditStatus newStatus) external;
+    function escrowTransfer(address from, address to, uint256 tokenId) external;
     function retireCredit(uint256 tokenId, string calldata retirementReason) external;
     function getCreditDetails(uint256 tokenId) external view returns (bytes32 projectId, bytes32 bundleId, bytes32 merkleRoot, uint256 tonnage, uint16 vintage, CreditStatus status);
 }

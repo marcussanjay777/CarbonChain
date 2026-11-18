@@ -42,7 +42,7 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
   const [projectType, setProjectType] = useState('REFORESTATION');
   const [locationCountry, setLocationCountry] = useState('Brazil');
   const [locationRegion, setLocationRegion] = useState('Acre State');
-  const [claimedTonnage, setClaimedTonnage] = useState<number>(50000);
+  const [claimedTonnage, setClaimedTonnage] = useState<number>(500);
   const [developerWallet, setDeveloperWallet] = useState<string>(wallet.address || '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266');
 
   useEffect(() => {
@@ -85,6 +85,43 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionSuccess, setSubmissionSuccess] = useState(false);
   const [submittedResult, setSubmittedResult] = useState<any>(null);
+  const [submitError, setSubmitError] = useState('');
+
+  /** One-click demo scenarios. "Clean" agrees across sources; "Fraud" over-claims vs satellite + sensors. */
+  const loadScenario = async (kind: 'clean' | 'fraud') => {
+    const clean = kind === 'clean';
+    setProjectId(`PROJ-${clean ? 'AMAZON' : 'BORNEO'}-${Math.floor(100 + Math.random() * 900)}`);
+    setProjectName(clean ? 'Amazonian Peatland & Canopy Bio-Sink' : 'Borneo Lowland Canopy Restoration');
+    setProjectType('REFORESTATION');
+    setLocationCountry(clean ? 'Brazil' : 'Indonesia');
+    setLocationRegion(clean ? 'Acre State' : 'Central Kalimantan');
+    setClaimedTonnage(500);
+    setCapexSpentUsd(clean ? 1450000 : 210000);
+    setIotSensorId(clean ? 'IOT-CANOPY-409' : 'IOT-CANOPY-666');
+    setIotCo2Flux(clean ? 412.5 : 684.0);
+    setIotMoisture(clean ? 48.2 : 12.1);
+    setIotSoilCarbon(clean ? 34.8 : 9.4);
+    setIotBiomass(142.0);
+    setSatNdvi(clean ? 0.812 : 0.41);
+    setSatEvi(clean ? 0.745 : 0.32);
+    setSatCanopyCover(clean ? 94.5 : 38.0);
+    setSatCloudCover(clean ? 1.2 : 3.0);
+    setSatLatitude(clean ? '-9.0238' : '-1.6815');
+    setSatLongitude(clean ? '-70.8120' : '113.3824');
+    setSatDataSource('MANUAL_ENTRY');
+    setSatTimestamp(new Date().toISOString());
+    setSatWarning(clean ? 'Demo scenario: healthy canopy consistent with ground sensors.' : 'Demo scenario: canopy loss and elevated CO2 flux contradict the claim.');
+
+    const text = `CAPEX INVOICE BUNDLE\nProject: ${clean ? 'Amazonian Peatland' : 'Borneo Lowland'}\nTotal: USD ${clean ? '1,450,000' : '210,000'}\nIssued: ${new Date().toISOString()}`;
+    const bytes = new TextEncoder().encode(text);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    const snapshot = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`sentinel2:${kind}:${Date.now()}`));
+    setSatSnapshotHash('0x' + Array.from(new Uint8Array(snapshot)).map((b) => b.toString(16).padStart(2, '0')).join(''));
+    setFinancialDocument({ name: 'capex-invoices.txt', type: 'text/plain', size: bytes.length, contentBase64: btoa(text) });
+    setFinancialReceiptHash('0x' + hex);
+    setSubmitError('');
+  };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -175,6 +212,7 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
   const handleSubmitProjectBaseline = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setSubmitError('');
 
     try {
       if (!financialDocument || !financialReceiptHash) throw new Error('Upload a financial evidence document before submission.');
@@ -293,9 +331,13 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
       });
 
       setSubmittedResult({
+        registerTxHash: regData.txHash,
+        evidenceTxHash: evData.txHash,
+        riskTxHash: riskData.txHash,
+        mintResult: riskData.mintResult,
         projectId,
         name: projectName,
-        did: regData.did || `did:carbonchain:${developerWallet.toLowerCase()}`,
+        did: regData.did || `did:carbonyx:${developerWallet.toLowerCase()}`,
         merkleRoot: evData.merkleRoot,
         bundleId: evData.bundle?.bundle_id,
         confidenceScore: assessment?.confidence_score ?? null,
@@ -313,38 +355,7 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
       });
 
     } catch (err: any) {
-      console.warn('Submitting with resilient client store fallback:', err);
-      projectFlowStore.submitProject({
-        id: projectId,
-        name: projectName,
-        projectType,
-        location: { country: locationCountry, region: locationRegion },
-        developerWallet,
-        developerName: 'Amazonas BioCarbon Consórcio',
-        claimedAnnualTonnage: claimedTonnage,
-        capexUsd: capexSpentUsd,
-        merkleRoot: '0x4a9b2c7e1f8d3a6c9e0b2d4f8a1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c',
-        aiConfidenceScore: 92,
-        riskLevel: 'LOW'
-      });
-      setSubmittedResult({
-        projectId,
-        name: projectName,
-        did: `did:carbonchain:${developerWallet.toLowerCase()}`,
-        merkleRoot: '0x4a9b2c7e1f8d3a6c9e0b2d4f8a1c3e5b7d9f2a4c6e8b0d2f4a6c8e0b2d4f6a8c',
-        bundleId: `bundle_${Date.now()}`,
-        confidenceScore: 92,
-        riskLevel: 'LOW',
-        anomalyFlags: [],
-        verifierRequired: false
-      });
-      setSubmissionSuccess(true);
-      confetti({
-        particleCount: 140,
-        spread: 80,
-        origin: { y: 0.6 },
-        colors: ['#10B981', '#064E3B', '#34D399', '#6EE7B7']
-      });
+      setSubmitError(err.message || 'Submission failed');
     } finally {
       setIsSubmitting(false);
     }
@@ -381,7 +392,9 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
               {submittedResult.name}
             </h2>
             <p className="text-sm text-slate-300 max-w-lg mx-auto">
-              Your project has entered the <strong className="text-white">Public Baseline Explorer</strong>. It is now open for the 14-day community challenge & observation window before final offset token issuance.
+              {submittedResult.mintResult
+                ? <>AI confidence passed the policy gate, so <strong className="text-white">CarbonRegistry minted credit NFT #{submittedResult.mintResult.tokenId}</strong> ({submittedResult.mintResult.tonnage} tCO2e) straight to your wallet.</>
+                : <>The AI engine flagged this bundle, so it was <strong className="text-white">escalated to the staked verifier quorum</strong>. No credit can be minted until independent verifiers sign off on-chain.</>}
             </p>
           </div>
 
@@ -390,7 +403,7 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
             <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-1">
               <div className="text-[10px] text-slate-400 uppercase font-semibold">Project Identifier</div>
               <div className="text-xs font-mono font-bold text-white">{submittedResult.projectId}</div>
-              <div className="text-[10px] text-emerald-400">Status: In 14-Day Window</div>
+              <div className="text-[10px] text-emerald-400">{submittedResult.mintResult ? `NFT #${submittedResult.mintResult.tokenId} issued` : 'Awaiting verifier quorum'}</div>
             </div>
 
             <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-1">
@@ -427,6 +440,14 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
             </button>
           </div>
 
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 font-mono text-[11px] text-slate-400 text-left space-y-1">
+            <div className="text-slate-500 font-semibold uppercase text-[10px]">On-chain transactions (Anvil / CarbonRegistry)</div>
+            <div className="truncate">registerProjectFor: <span className="text-sky-300">{submittedResult.registerTxHash || 'already registered'}</span></div>
+            <div className="truncate">commitEvidenceBundle: <span className="text-sky-300">{submittedResult.evidenceTxHash}</span></div>
+            <div className="truncate">recordRiskResult: <span className="text-sky-300">{submittedResult.riskTxHash}</span></div>
+            {submittedResult.mintResult && <div className="truncate">mintCredit: <span className="text-emerald-300">{submittedResult.mintResult.txHash}</span></div>}
+          </div>
+
           {/* Action Navigation Buttons */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
             <button
@@ -450,6 +471,21 @@ export const IssuerStudio: React.FC<IssuerStudioProps> = ({ wallet, backendUrl, 
 
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-sky-500/20 bg-sky-950/20 p-4">
+        <div className="text-xs text-slate-300">
+          <strong className="text-white">Demo scenarios:</strong> pre-fill telemetry that the AI engine will approve, or that it will flag as fraud.
+        </div>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => loadScenario('clean')} className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold">Load clean scenario</button>
+          <button type="button" onClick={() => loadScenario('fraud')} className="px-4 py-2 rounded-xl bg-red-500 hover:bg-red-400 text-white text-xs font-extrabold">Load fraud scenario</button>
+        </div>
+      </div>
+      {submitError && (
+        <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-300">
+          <strong>Submission failed:</strong> {submitError}
+        </div>
+      )}
+
       {/* Header Banner */}
       <div className="portal-page-header bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-slate-950 border border-emerald-500/20 rounded-2xl p-6 backdrop-blur-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>

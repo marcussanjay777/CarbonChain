@@ -4,6 +4,7 @@ import { RelayerService } from '../services/relayer.service';
 import { CryptographicService } from '../services/cryptographic.service';
 import { requireRoles } from '../auth/middleware';
 import { isAddress } from 'ethers';
+import { fail, notify, walletFor } from './helpers';
 
 const router = Router();
 
@@ -34,43 +35,65 @@ function buildQuorum(riskLevel: string, auditItems: any[], highRiskQuorum = 2) {
   };
 }
 
-// POST /api/verifiers/stake (and POST /api/verifiers) - Register or update verifier stake
+// POST /api/verifiers/stake - stake ETH collateral in VerifierStakingLedger (on-chain) and mirror it
 const handleStake = async (req: Request, res: Response) => {
   try {
     const { verifierAddress, specialization } = req.body;
-    const stakedAmount = req.body.stakedAmount !== undefined ? req.body.stakedAmount : req.body.amountEth;
+    const amountEth = Number(req.body.stakedAmount !== undefined ? req.body.stakedAmount : req.body.amountEth);
+    const auth = res.locals.auth;
+    const wallet = walletFor(res, verifierAddress);
 
-    if (!verifierAddress || stakedAmount === undefined) {
-      return res.status(400).json({ error: 'verifierAddress and stakedAmount are required' });
+    if (!wallet) return res.status(400).json({ error: 'A valid verifier wallet is required' });
+    if (!Number.isFinite(amountEth) || amountEth < 0.1) {
+      return res.status(400).json({ error: 'Stake at least 0.1 ETH of collateral to join the verifier pool' });
     }
-    if (!isAddress(verifierAddress) || !Number.isFinite(Number(stakedAmount)) || Number(stakedAmount) < 0.1) {
-      return res.status(400).json({ error: 'Provide a valid verifier address and a stake of at least 0.1 ETH' });
-    }
+
+    const { txHash } = await RelayerService.stakeOnChain(wallet, amountEth);
+    const profile = await RelayerService.getVerifierProfile(wallet);
 
     const { data: verifier, error } = await supabase
       .from('verifier_stakes')
       .upsert({
-        verifier_address: verifierAddress,
-        staked_amount: Number(stakedAmount),
-        reputation_score: 100,
-        active_in_pool: Number(stakedAmount) >= 0.1,
+        verifier_address: wallet,
+        display_name: auth.displayName,
+        organization: auth.organization,
+        staked_amount: Number(profile.stakedEth),
+        reputation_score: profile.reputationScore,
+        active_in_pool: profile.isStaked,
         specialization: specialization || 'REFORESTATION',
+        stake_tx_hash: txHash,
         last_stake_timestamp: new Date().toISOString()
       })
       .select()
       .single();
-
     if (error) return res.status(500).json({ error: error.message });
 
-    return res.status(200).json({
-      success: true,
-      verifier,
-      message: 'Verifier stake recorded successfully'
+    await notify({
+      title: 'Verifier Collateral Staked',
+      message: `${auth.displayName} staked ${amountEth} ETH on-chain (total ${profile.stakedEth} ETH) and joined the verifier pool.`,
+      category: 'VERIFIER_STAKE',
+      recipientRole: 'ALL',
+      txHash
     });
+
+    return res.status(200).json({ success: true, verifier, profile, txHash, message: 'Collateral staked on-chain' });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    return fail(res, error);
   }
 };
+
+// GET /api/verifiers/me - live on-chain staking profile for the signed-in verifier
+router.get('/me', requireRoles('INDEPENDENT_VERIFIER'), async (_req: Request, res: Response) => {
+  try {
+    const wallet = walletFor(res);
+    if (!wallet) return res.status(200).json({ wallet: null, profile: null });
+    const profile = await RelayerService.getVerifierProfile(wallet);
+    const balanceEth = await RelayerService.getBalanceEth(wallet);
+    return res.status(200).json({ wallet, profile, balanceEth });
+  } catch (error: any) {
+    return fail(res, error);
+  }
+});
 
 router.post('/stake', requireRoles('INDEPENDENT_VERIFIER'), handleStake);
 router.post('/', requireRoles('INDEPENDENT_VERIFIER'), handleStake);
@@ -143,7 +166,8 @@ router.get('/queue', requireRoles('INDEPENDENT_VERIFIER'), async (_req: Request,
 // POST /api/verifiers/request-evidence - Ask the proponent for clarification or new evidence.
 router.post('/request-evidence', requireRoles('INDEPENDENT_VERIFIER'), async (req: Request, res: Response) => {
   try {
-    const { bundleId, verifierAddress, category, message, dueDate } = req.body;
+    const { bundleId, category, message, dueDate } = req.body;
+    const verifierAddress = walletFor(res, req.body.verifierAddress) || '';
     if (!bundleId || !verifierAddress || !message || String(message).trim().length < 10) {
       return res.status(400).json({ error: 'bundleId, verifierAddress, and a detailed evidence request are required' });
     }
@@ -201,7 +225,6 @@ router.post('/verify', requireRoles('INDEPENDENT_VERIFIER'), async (req: Request
   try {
     const {
       bundleId,
-      verifierAddress,
       approved,
       auditNotes,
       checklist,
@@ -209,6 +232,7 @@ router.post('/verify', requireRoles('INDEPENDENT_VERIFIER'), async (req: Request
       decisionConfidence,
       recommendedTonnage
     } = req.body;
+    const verifierAddress = walletFor(res, req.body.verifierAddress) || '';
 
     if (!bundleId || !verifierAddress || approved === undefined) {
       return res.status(400).json({ error: 'bundleId, verifierAddress, and approved decision are required' });
@@ -229,18 +253,14 @@ router.post('/verify', requireRoles('INDEPENDENT_VERIFIER'), async (req: Request
       return res.status(400).json({ error: 'Decision confidence must be between 0 and 100' });
     }
 
-    // 1. Verify verifier is staked and active
-    const { data: verifier } = await supabase
-      .from('verifier_stakes')
-      .select('*')
-      .eq('verifier_address', verifierAddress)
-      .single();
-
-    if (!verifier || !verifier.active_in_pool) {
+    // 1. Verify the verifier holds live collateral on-chain
+    const chainProfile = await RelayerService.getVerifierProfile(verifierAddress);
+    if (!chainProfile.isStaked) {
       return res.status(403).json({
-        error: 'Verifier must have minimum active collateral staked (>= 0.1 ETH) to submit audits'
+        error: 'Verifier must have minimum active collateral staked (>= 0.1 ETH) on-chain to submit audits'
       });
     }
+    const { data: verifier } = await supabase.from('verifier_stakes').select('*').eq('verifier_address', verifierAddress).maybeSingle();
 
     // 2. Fetch Bundle Details
     const { data: bundle } = await supabase
@@ -274,8 +294,12 @@ router.post('/verify', requireRoles('INDEPENDENT_VERIFIER'), async (req: Request
       return res.status(409).json({ error: 'This verifier wallet has already voted on the selected bundle' });
     }
 
+    // Record this verifier's decision on-chain first (reverts on double-vote / conflict of interest).
+    const voteTxHash = await RelayerService.castVerifierVoteOnChain(bundleId, verifierAddress, Boolean(approved));
+
     const auditPayload = {
       action: 'DECISION',
+      voteTxHash,
       approved,
       auditNotes: String(auditNotes).trim(),
       checklist,
@@ -312,7 +336,7 @@ router.post('/verify', requireRoles('INDEPENDENT_VERIFIER'), async (req: Request
     const finalApproved = quorum.approvals >= quorum.required;
     let mintTxHash = null;
     let tokenId = null;
-    const verificationTxHash = await RelayerService.recordVerificationOnChain(bundleId, finalApproved);
+    const verificationTxHash = await RelayerService.finalizeVerificationOnChain(bundleId, finalApproved);
 
     if (finalApproved) {
       const proposedTonnages = quorum.votes
@@ -324,47 +348,56 @@ router.post('/verify', requireRoles('INDEPENDENT_VERIFIER'), async (req: Request
         : Number((bundle.projects as any)?.claimed_annual_tonnage || 100));
       const vintage = new Date().getFullYear();
 
-      const mintResult = await RelayerService.mintCreditOnChain(
-        bundleId,
-        tonnage,
-        vintage
-      );
-
+      const mintResult = await RelayerService.mintCreditOnChain(bundleId, tonnage, vintage);
       mintTxHash = mintResult.txHash;
       tokenId = mintResult.tokenId;
 
-      await supabase
-        .from('evidence_bundles')
-        .update({ status: 'ISSUED' })
-        .eq('bundle_id', bundleId);
+      await supabase.from('evidence_bundles').update({ status: 'ISSUED' }).eq('bundle_id', bundleId);
 
       const recipient = (bundle.projects as any)?.owner_address || verifierAddress;
+      await supabase.from('carbon_credit_nfts').insert({
+        token_id: tokenId,
+        project_id: bundle.project_id,
+        bundle_id: bundleId,
+        current_owner: recipient,
+        co2_tonnage: tonnage,
+        vintage_year: vintage,
+        merkle_root: bundle.merkle_root,
+        mint_tx_hash: mintTxHash,
+        status: 'ISSUED'
+      });
 
-      await supabase
-        .from('carbon_credit_nfts')
-        .insert({
-          token_id: tokenId,
-          project_id: bundle.project_id,
-          bundle_id: bundleId,
-          current_owner: recipient,
-          co2_tonnage: tonnage,
-          vintage_year: vintage,
-          merkle_root: bundle.merkle_root,
-          token_uri: `ipfs://QmVerifierApproved/${bundleId}`,
-          status: 'ISSUED'
-        });
-
-      await supabase
-        .from('verifier_stakes')
-        .update({
-          reputation_score: Math.min(100, (verifier.reputation_score || 100) + 2)
-        })
-        .eq('verifier_address', verifierAddress);
+      await notify({
+        title: 'Project Audited & Credits Issued',
+        message: `Verifier quorum approved ${(bundle.projects as any)?.name || bundleId}. ${tonnage} tCO2e minted as NFT #${tokenId}.`,
+        category: 'NFT_ISSUED',
+        recipientRole: 'PROJECT_PROPONENT',
+        projectId: bundle.project_id,
+        txHash: mintTxHash
+      });
     } else {
-      await supabase
-        .from('evidence_bundles')
-        .update({ status: 'REJECTED' })
-        .eq('bundle_id', bundleId);
+      await supabase.from('evidence_bundles').update({ status: 'REJECTED' }).eq('bundle_id', bundleId);
+      await notify({
+        title: 'Verifier Quorum Rejected Evidence',
+        message: `The verifier quorum rejected the evidence bundle for ${(bundle.projects as any)?.name || bundleId}.`,
+        category: 'AUDIT_APPROVED',
+        recipientRole: 'PROJECT_PROPONENT',
+        projectId: bundle.project_id,
+        txHash: verificationTxHash
+      });
+    }
+
+    // Mirror every voter's reputation/stake from the ledger (the ledger stays authoritative).
+    for (const vote of quorum.votes) {
+      const addr = String(vote.verifierAddress);
+      try {
+        const prof = await RelayerService.getVerifierProfile(addr);
+        await supabase.from('verifier_stakes').update({
+          reputation_score: prof.reputationScore,
+          total_verified: prof.totalVerified,
+          staked_amount: Number(prof.stakedEth)
+        }).eq('verifier_address', addr);
+      } catch { /* best effort */ }
     }
 
     await supabase
@@ -397,12 +430,13 @@ router.post('/verify', requireRoles('INDEPENDENT_VERIFIER'), async (req: Request
       bundleId,
       quorum,
       transactionHash: mintTxHash,
+      voteTxHash,
       verificationTxHash,
       tokenId,
       message: finalApproved ? 'Verifier quorum reached and Carbon Credit NFT issued' : 'Verifier quorum rejected the evidence bundle'
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    return fail(res, error);
   }
 });
 

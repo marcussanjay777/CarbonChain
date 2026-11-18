@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import { supabase } from '../config/supabase';
 import { CryptographicService } from '../services/cryptographic.service';
 import { RelayerService } from '../services/relayer.service';
-import { requireRoles } from '../auth/middleware';
+import { authenticate, requireRoles } from '../auth/middleware';
+import { fail, notify } from './helpers';
 
 const router = Router();
 const ML_ENGINE_URL = process.env.ML_ENGINE_URL || 'http://localhost:8000';
@@ -139,41 +140,80 @@ router.post('/evaluate', requireRoles('PROJECT_PROPONENT'), async (req: Request,
       verifier_required: verifierRequired
     };
 
+    // The bundle must belong to the caller and already be anchored on-chain.
+    const { data: bundleRow } = await supabase.from('evidence_bundles').select('*, projects(*)').eq('bundle_id', bundleId).maybeSingle();
+    if (!bundleRow) return res.status(404).json({ error: 'Evidence bundle not found. Upload evidence first.' });
+    const projectRow: any = (bundleRow as any).projects;
+    if (projectRow?.created_by_user_id && projectRow.created_by_user_id !== res.locals.auth.id) {
+      return res.status(403).json({ error: 'Only the project proponent can evaluate this bundle' });
+    }
+
+    const correlationMet = !(anomalyFlags || []).some((f: string) => f.includes('MISMATCH') || f.includes('DEVIATION'));
+    const confidenceMet = Number(confidenceScore) >= minimumAiConfidence;
+    const onChainRiskTxHash = await RelayerService.recordRiskResultOnChain(bundleId, correlationMet, confidenceMet, verifierRequired);
+
     const { data: riskRecord, error: riskError } = await supabase
       .from('risk_assessments')
-      .upsert(assessmentRecord)
+      .upsert({ ...assessmentRecord, on_chain_tx_hash: onChainRiskTxHash })
       .select()
       .single();
+    if (riskError) return res.status(500).json({ error: riskError.message });
 
-    let onChainRiskTxHash = null;
-    try {
-      const correlationMet = !(anomalyFlags || []).some((f: string) => f.includes('MISMATCH') || f.includes('DEVIATION'));
-      const confidenceMet = confidenceScore >= minimumAiConfidence;
-      onChainRiskTxHash = await RelayerService.recordRiskResultOnChain(
-        bundleId,
-        correlationMet,
-        confidenceMet,
-        verifierRequired
-      );
-    } catch (err: any) {
-      console.warn('[Relayer] On-chain risk recording warning:', err.message);
+    await supabase.from('evidence_bundles').update({ status: verifierRequired ? 'ANOMALOUS' : 'CORRELATED' }).eq('bundle_id', bundleId);
+
+    // Policy-gated auto-issuance: high confidence + cross-source agreement mints with no human in the loop.
+    let mintResult: any = null;
+    if (autoMintEligible && correlationMet && !verifierRequired) {
+      const tonnage = Math.max(1, Math.floor(declared));
+      const vintage = new Date().getFullYear();
+      const minted = await RelayerService.mintCreditOnChain(bundleId, tonnage, vintage);
+      await supabase.from('carbon_credit_nfts').insert({
+        token_id: minted.tokenId,
+        project_id: bundleRow.project_id,
+        bundle_id: bundleId,
+        current_owner: projectRow.owner_address,
+        co2_tonnage: tonnage,
+        vintage_year: vintage,
+        merkle_root: bundleRow.merkle_root,
+        mint_tx_hash: minted.txHash,
+        status: 'ISSUED'
+      });
+      await supabase.from('evidence_bundles').update({ status: 'ISSUED' }).eq('bundle_id', bundleId);
+      await notify({
+        title: 'Credit Auto-Issued',
+        message: `AI confidence ${confidenceScore}% passed the policy gate. ${tonnage} tCO2e minted as NFT #${minted.tokenId} to your wallet.`,
+        category: 'NFT_ISSUED',
+        recipientRole: 'PROJECT_PROPONENT',
+        projectId: bundleRow.project_id,
+        txHash: minted.txHash
+      });
+      mintResult = { ...minted, tonnage, vintage };
+    } else {
+      await notify({
+        title: 'Escalated to Independent Verifiers',
+        message: `AI confidence ${confidenceScore}% (${riskLevel}) is below the issuance gate. A staked verifier quorum must review this bundle.`,
+        category: 'VERIFIER_STAKE',
+        recipientRole: 'INDEPENDENT_VERIFIER',
+        projectId: bundleRow.project_id,
+        txHash: onChainRiskTxHash
+      });
     }
 
     return res.status(200).json({
       success: true,
-      riskAssessment: riskRecord || assessmentRecord,
-      assessment: riskRecord || assessmentRecord,
+      riskAssessment: riskRecord,
+      assessment: riskRecord,
       txHash: onChainRiskTxHash,
       onChainRiskTxHash,
-      mintResult: null,
-      message: 'Risk assessment evaluated and recorded successfully'
+      mintResult,
+      message: mintResult ? 'Risk evaluated, recorded on-chain and credit minted automatically' : 'Risk assessment evaluated and recorded on-chain'
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    return fail(res, error);
   }
 });
 
-router.get('/:bundleId', async (req: Request, res: Response) => {
+router.get('/:bundleId', authenticate, async (req: Request, res: Response) => {
   try {
     const { bundleId } = req.params;
     const { data, error } = await supabase

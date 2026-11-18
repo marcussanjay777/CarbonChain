@@ -31,3 +31,6 @@ venv/
 
 # Misc
 .DS_Store
+
+# Local offline database
+.localdb/

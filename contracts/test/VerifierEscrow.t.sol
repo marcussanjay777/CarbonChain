@@ -46,6 +46,8 @@ contract VerifierEscrowTest is Test {
         vm.deal(issuer, 1 ether);
     }
 
+    receive() external payable {}
+
     function test_VerifierStakingActivation() public {
         vm.prank(verifier);
         stakingLedger.stake{value: 1 ether}();
@@ -95,12 +97,12 @@ contract VerifierEscrowTest is Test {
         uint256 tokenId = registry.mintCredit(bundleId, 1000, 2026);
 
         vm.prank(issuer);
-        nft.approve(address(escrow), tokenId);
+        escrow.listCredit(tokenId, 2 ether);
 
         vm.prank(buyer);
         bytes32 escrowId = escrow.buyWithEscrow{value: 2 ether}(tokenId);
 
-        (,, address seller, uint256 amount, IEscrowSettlement.EscrowStatus status) = escrow.escrows(escrowId);
+        (,, address seller, uint256 amount, IEscrowSettlement.EscrowStatus status,) = escrow.escrows(escrowId);
         assertEq(seller, issuer);
         assertEq(amount, 2 ether);
         assertTrue(status == IEscrowSettlement.EscrowStatus.LOCKED);
@@ -110,6 +112,7 @@ contract VerifierEscrowTest is Test {
         escrow.releaseEscrow(escrowId);
 
         assertEq(issuer.balance, issuerBalanceBefore + 2 ether);
+        assertEq(nft.ownerOf(tokenId), buyer);
     }
 
     function test_DisputeRevocationAndSlashing() public {

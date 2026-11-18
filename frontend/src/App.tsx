@@ -105,12 +105,6 @@ export default function App() {
         return;
       }
       const stored = getStoredUser();
-      if (stored && (token.startsWith('demo-session-') || token.startsWith('demo-token-'))) {
-        setAuthUser(stored);
-        setActiveTab(rolePortal[stored.role].home);
-        setIsRestoringSession(false);
-        return;
-      }
       try {
         const response = await apiFetch(`${backendUrl}/api/auth/session`);
         if (!response.ok) throw new Error('Session expired');
@@ -119,12 +113,9 @@ export default function App() {
         saveStoredUser(data.user);
         setActiveTab(rolePortal[data.user.role as AuthUser['role']].home);
       } catch {
-        if (stored) {
-          setAuthUser(stored);
-          setActiveTab(rolePortal[stored.role].home);
-        } else {
-          clearAuthToken();
-        }
+        // Never trust a cached user without a server-verified session.
+        clearAuthToken();
+        void stored;
       } finally {
         setIsRestoringSession(false);
       }
@@ -169,6 +160,14 @@ export default function App() {
       });
     }
   }, []);
+
+  // Accounts with a bound protocol wallet use it as their signer identity (the backend relayer signs for
+  // the local demo wallets). MetaMask remains available for accounts without a bound wallet.
+  useEffect(() => {
+    if (authUser?.walletAddress) {
+      setWallet({ address: authUser.walletAddress, signer: null, chainId: 31337, isConnected: true, error: null });
+    }
+  }, [authUser?.walletAddress]);
 
   const handleConnect = async () => {
     setIsConnecting(true);

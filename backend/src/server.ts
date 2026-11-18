@@ -3,8 +3,10 @@ dotenv.config();
 
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { supabase } from './config/supabase';
+import { supabase, usingLocalDb } from './config/supabase';
 import { RelayerService } from './services/relayer.service';
+import { EventListenerService } from './services/eventListener.service';
+import { authenticate } from './auth/middleware';
 
 import projectsRouter from './routes/projects.routes';
 import evidenceRouter from './routes/evidence.routes';
@@ -15,6 +17,8 @@ import marketplaceRouter from './routes/marketplace.routes';
 import satelliteRouter from './routes/satellite.routes';
 import authRouter from './routes/auth.routes';
 import regulatorRouter from './routes/regulator.routes';
+import disputesRouter from './routes/disputes.routes';
+import lifecycleRouter from './routes/lifecycle.routes';
 
 const app = express();
 const PORT = process.env.PORT || 5005;
@@ -22,9 +26,6 @@ const PORT = process.env.PORT || 5005;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-RelayerService.initialize(process.env.REGISTRY_CONTRACT_ADDRESS);
-
-// Mount API routes
 app.use('/api/auth', authRouter);
 app.use('/api/projects', projectsRouter);
 app.use('/api/evidence', evidenceRouter);
@@ -34,40 +35,50 @@ app.use('/api/verifiers', verifiersRouter);
 app.use('/api/marketplace', marketplaceRouter);
 app.use('/api/satellite', satelliteRouter);
 app.use('/api/regulator', regulatorRouter);
+app.use('/api/disputes', disputesRouter);
+app.use('/api/lifecycle', lifecycleRouter);
+
+// Public, append-only feed of every protocol contract event (mirrored by the event listener)
+app.get('/api/chain/events', authenticate, async (req: Request, res: Response) => {
+  const limit = Math.min(200, Number(req.query.limit) || 50);
+  const { data, error } = await supabase.from('chain_events').select('*').order('block_number', { ascending: false }).limit(limit);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ events: data || [] });
+});
 
 app.get('/health', async (_req: Request, res: Response) => {
-  let supabaseConnected = false;
-  let dbError = null;
-
+  let databaseConnected = false;
+  let dbError: string | null = null;
   try {
     const { error } = await supabase.from('projects').select('count', { count: 'exact', head: true });
-    if (!error) {
-      supabaseConnected = true;
-    } else {
-      dbError = error.message;
-    }
+    databaseConnected = !error;
+    dbError = error?.message || null;
   } catch (err: any) {
     dbError = err.message;
   }
-
-  const status = 'HEALTHY';
+  const chain = await RelayerService.status().catch((e: any) => ({ connected: false, error: e.message }));
   return res.status(200).json({
-    status,
+    status: databaseConnected && chain.connected ? 'HEALTHY' : 'DEGRADED',
     service: 'carbonchain-backend',
     timestamp: new Date().toISOString(),
-    supabaseConnected,
-    relayerConnected: RelayerService.isConnected(),
-    database: {
-      status: supabaseConnected ? 'connected' : 'disconnected',
-      error: dbError
-    },
+    database: { mode: usingLocalDb ? 'local-file' : 'supabase', connected: databaseConnected, error: dbError },
+    supabaseConnected: databaseConnected,
+    relayerConnected: chain.connected,
+    chain,
     environment: process.env.NODE_ENV || 'development'
   });
 });
 
+export async function bootstrap() {
+  await RelayerService.initialize();
+  await EventListenerService.start();
+}
+
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
-    console.log(`CarbonChain Backend Relayer running on http://localhost:${PORT}`);
+  bootstrap().then(() => {
+    app.listen(PORT, () => {
+      console.log(`CarbonChain Backend Relayer running on http://localhost:${PORT}`);
+    });
   });
 }
 

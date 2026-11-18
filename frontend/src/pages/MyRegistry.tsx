@@ -100,13 +100,15 @@ export default function MyRegistry({ wallet, backendUrl }: MyRegistryProps) {
 
   const unreadNotifsCount = notifications.filter((n) => !n.read).length;
 
-  const handleAdvanceBaseline = (projectId: string, event?: React.MouseEvent) => {
+  const handleAdvanceBaseline = async (projectId: string, event?: React.MouseEvent) => {
     if (event) event.stopPropagation();
-    const success = projectFlowStore.advanceBaselineWindow(projectId);
-    if (success) {
-      setSuccessMessage('14-day baseline challenge window completed! Project routed to Verifier Pool.');
-      syncProjects();
+    setErrorMessage('');
+    try {
+      await projectFlowStore.advanceBaselineWindow(projectId);
+      setSuccessMessage('Baseline challenge window closed for this project.');
       setTimeout(() => setSuccessMessage(''), 4000);
+    } catch (err: any) {
+      setErrorMessage(err.message);
     }
   };
 
@@ -116,23 +118,21 @@ export default function MyRegistry({ wallet, backendUrl }: MyRegistryProps) {
     setPricingEth(project.listingPricePerNftEth || 0.045);
   };
 
-  const handleListOnMarketplace = () => {
+  const handleListOnMarketplace = async () => {
     if (!pricingProjectId) return;
     setIsListingLoading(true);
-    setTimeout(() => {
-      projectFlowStore.listNftsOnMarketplace(pricingProjectId, pricingEth);
-      setIsListingLoading(false);
+    setErrorMessage('');
+    try {
+      await projectFlowStore.listNftsOnMarketplace(pricingProjectId, pricingEth);
       setPricingProjectId(null);
-      setSuccessMessage(`Carbon Credit NFTs successfully listed on Marketplace at ${pricingEth} ETH each!`);
-      confetti({
-        particleCount: 120,
-        spread: 70,
-        origin: { y: 0.6 },
-        colors: ['#10B981', '#3B82F6', '#F59E0B']
-      });
-      syncProjects();
+      setSuccessMessage(`Credit NFTs listed on-chain in EscrowSettlement at ${pricingEth} ETH each.`);
+      confetti({ particleCount: 120, spread: 70, origin: { y: 0.6 }, colors: ['#10B981', '#3B82F6', '#F59E0B'] });
       setTimeout(() => setSuccessMessage(''), 5000);
-    }, 600);
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    } finally {
+      setIsListingLoading(false);
+    }
   };
 
   const getStepNumber = (state: ProjectLifecycleState): number => {
@@ -144,7 +144,10 @@ export default function MyRegistry({ wallet, backendUrl }: MyRegistryProps) {
       CREDITS_ISSUED: 5,
       LISTED_ON_MARKETPLACE: 6,
       PURCHASED: 6,
-      RETIRED: 7
+      RETIRED: 7,
+      REJECTED: 3,
+      DISPUTED: 6,
+      REVOKED: 6
     };
     return map[state] || 1;
   };
@@ -461,7 +464,17 @@ export default function MyRegistry({ wallet, backendUrl }: MyRegistryProps) {
                       <>
                         <CheckCircle2 className="h-4 w-4 text-teal-400" />
                         <span className="text-slate-300">
-                          <strong>Credits Acquired & Retired:</strong> Offsets permanently retired by corporate buyers with cryptographic certificates.
+                          {project.lifecycleState === 'PURCHASED' ? (
+                            <><strong>Sold into escrow:</strong> buyer funds are locked in EscrowSettlement and released to your wallet when the buyer settles or the challenge window ends.</>
+                          ) : project.lifecycleState === 'DISPUTED' ? (
+                            <><strong>Credit disputed:</strong> frozen on-chain pending a regulator ruling.</>
+                          ) : project.lifecycleState === 'REVOKED' ? (
+                            <><strong>Credit revoked:</strong> a dispute was upheld. Buyers were refunded and approving verifiers slashed.</>
+                          ) : project.lifecycleState === 'REJECTED' ? (
+                            <><strong>Evidence rejected:</strong> the verifier quorum rejected this bundle. Submit new evidence.</>
+                          ) : (
+                            <><strong>Credits Acquired & Retired:</strong> Offsets permanently retired by buyers and burned on-chain.</>
+                          )}
                         </span>
                       </>
                     )}
@@ -524,13 +537,13 @@ export default function MyRegistry({ wallet, backendUrl }: MyRegistryProps) {
                 <div className="flex justify-between">
                   <span>NFTs in Batch:</span>
                   <span className="text-white font-bold">
-                    {projectFlowStore.getProjectById(pricingProjectId)?.nfts.length || 100} NFTs
+                    {projectFlowStore.getProjectById(pricingProjectId)?.nfts.filter((n) => ['MINTED', 'LISTED', 'PURCHASED'].includes(n.status)).length || 0} NFTs
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span>Total Project Revenue:</span>
                   <span className="text-emerald-400 font-bold">
-                    {((projectFlowStore.getProjectById(pricingProjectId)?.nfts.length || 100) * pricingEth).toFixed(3)} ETH
+                    {((projectFlowStore.getProjectById(pricingProjectId)?.nfts.filter((n) => ['MINTED', 'LISTED', 'PURCHASED'].includes(n.status)).length || 0) * pricingEth).toFixed(3)} ETH
                   </span>
                 </div>
                 <div className="flex justify-between">

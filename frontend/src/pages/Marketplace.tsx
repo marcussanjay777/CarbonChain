@@ -17,7 +17,10 @@ import {
   Sparkles,
   ExternalLink,
   Award,
-  AlertCircle
+  AlertCircle,
+  Lock,
+  Gavel,
+  Clock
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { apiFetch, readApiJson } from '../lib/auth';
@@ -57,6 +60,19 @@ export default function Marketplace({
   // Legal Certificate Modal
   const [activeCertificate, setActiveCertificate] = useState<LegalComplianceCertificate | null>(null);
 
+  // Escrow / dispute state
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const [busyToken, setBusyToken] = useState<number | null>(null);
+  const [disputeItem, setDisputeItem] = useState<{ project: LifecycleProject; nft: CreditNftRecord } | null>(null);
+  const [disputeReason, setDisputeReason] = useState('Satellite NDVI and ground sensors contradict the claimed sequestration.');
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const short = (h?: string) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : '');
+
   const syncData = () => {
     setIsLoading(true);
     const mItems = projectFlowStore.getMarketplaceNfts();
@@ -74,67 +90,71 @@ export default function Marketplace({
     return () => unsubscribe();
   }, [walletAddress, view]);
 
-  // Handle Direct P2P Purchase (0% platform commission)
-  const handleConfirmPurchase = () => {
+  // Escrow purchase: payment is locked in EscrowSettlement for the challenge window
+  const handleConfirmPurchase = async () => {
     if (!buyItem) return;
     setIsBuying(true);
-
-    setTimeout(() => {
-      const purchased = projectFlowStore.buyCreditNft(
-        buyItem.project.id,
-        buyItem.nft.tokenId,
-        {
-          address: walletAddress || '0x14dC79964da2C08b23698B3D3cc7Ca32193d9955',
-          organizationName: buyerOrgName
-        }
-      );
-
-      setIsBuying(false);
-      const boughtItem = buyItem;
+    setError('');
+    try {
+      const r = await projectFlowStore.buyCreditNft(buyItem.project.id, buyItem.nft.tokenId);
+      setNotice(`Paid ${buyItem.nft.priceEth} ETH into escrow for NFT #${buyItem.nft.tokenId} · tx ${short(r.txHash)}. Settle from your portfolio.`);
       setBuyItem(null);
-
-      confetti({
-        particleCount: 140,
-        spread: 80,
-        origin: { y: 0.6 },
-        colors: ['#10B981', '#F59E0B', '#3B82F6', '#6366F1']
-      });
-
-      syncData();
-    }, 700);
+      confetti({ particleCount: 140, spread: 80, origin: { y: 0.6 }, colors: ['#10B981', '#F59E0B', '#3B82F6', '#6366F1'] });
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsBuying(false);
+    }
   };
 
-  // Handle Permanent Retirement & Generate Legal Certificate
-  const handleConfirmRetirement = () => {
+  const handleRelease = async (nft: CreditNftRecord) => {
+    if (!nft.escrowId) return;
+    setBusyToken(nft.tokenId);
+    setError('');
+    try {
+      const r = await projectFlowStore.releaseEscrow(nft.escrowId);
+      setNotice(`Escrow settled: seller paid and NFT #${nft.tokenId} transferred to your wallet · tx ${short(r.txHash)}`);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusyToken(null);
+    }
+  };
+
+  const handleDispute = async () => {
+    if (!disputeItem) return;
+    setBusyToken(disputeItem.nft.tokenId);
+    setError('');
+    try {
+      const r = await projectFlowStore.raiseDispute(disputeItem.nft.tokenId, disputeReason);
+      setNotice(`Dispute ${r.dispute.dispute_id} filed. NFT #${disputeItem.nft.tokenId} is frozen on-chain until the regulator rules · tx ${short(r.txHash)}`);
+      setDisputeItem(null);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusyToken(null);
+    }
+  };
+
+  // Permanent retirement: burns the ERC-721 on-chain, then renders the certificate
+  const handleConfirmRetirement = async () => {
     if (!retireItem) return;
     setIsRetiring(true);
-
-    setTimeout(() => {
-      const cert = projectFlowStore.retireCreditNft(
-        retireItem.project.id,
-        retireItem.nft.tokenId,
-        {
-          retirementReason: retireReason,
-          beneficiaryLegalName: retireLegalName,
-          beneficiaryJurisdiction: retireJurisdiction
-        }
-      );
-
-      setIsRetiring(false);
-      setRetireItem(null);
-
-      confetti({
-        particleCount: 160,
-        spread: 90,
-        origin: { y: 0.6 },
-        colors: ['#10B981', '#064E3B', '#34D399', '#6EE7B7']
+    setError('');
+    try {
+      const cert = await projectFlowStore.retireCreditNft(retireItem.project.id, retireItem.nft.tokenId, {
+        retirementReason: retireReason,
+        beneficiaryLegalName: retireLegalName,
+        beneficiaryJurisdiction: retireJurisdiction
       });
-
-      if (cert) {
-        setActiveCertificate(cert);
-      }
-      syncData();
-    }, 800);
+      setRetireItem(null);
+      confetti({ particleCount: 160, spread: 90, origin: { y: 0.6 }, colors: ['#10B981', '#064E3B', '#34D399', '#6EE7B7'] });
+      setActiveCertificate(cert);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsRetiring(false);
+    }
   };
 
   // Open existing legal certificate for already retired NFT
@@ -148,7 +168,9 @@ export default function Marketplace({
   const retiredTonnage = portfolioItems
     .filter((i) => i.nft.status === 'RETIRED')
     .reduce((acc, i) => acc + i.nft.co2Tonnage, 0);
-  const activeHoldingTonnage = totalPortfolioTonnage - retiredTonnage;
+  const activeHoldingTonnage = portfolioItems
+    .filter((i) => ['PURCHASED', 'IN_ESCROW'].includes(i.nft.status))
+    .reduce((acc, i) => acc + i.nft.co2Tonnage, 0);
 
   return (
     <div className="space-y-8 text-left w-full max-w-6xl mx-auto">
@@ -182,6 +204,17 @@ export default function Marketplace({
         </button>
       </div>
 
+      {notice && (
+        <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-300">
+          <CheckCircle2 className="h-4 w-4 flex-shrink-0" /> {notice}
+        </div>
+      )}
+      {error && (
+        <div className="flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-300">
+          <AlertCircle className="h-4 w-4 flex-shrink-0" /> {error}
+        </div>
+      )}
+
       {/* PORTFOLIO METRICS (When in Portfolio view) */}
       {isPortfolio && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -198,7 +231,7 @@ export default function Marketplace({
           <div className="p-4 rounded-xl bg-slate-900/80 border border-sky-500/20">
             <div className="text-[10px] font-bold uppercase tracking-wider text-sky-400">Active Tradable Holdings</div>
             <div className="text-2xl font-black font-mono text-white mt-1">{activeHoldingTonnage} tCO2e</div>
-            <p className="text-[10px] text-slate-400 mt-1">Ready to claim or transfer</p>
+            <p className="text-[10px] text-slate-400 mt-1">Held or in escrow</p>
           </div>
           <div className="p-4 rounded-xl bg-slate-900/80 border border-violet-500/20">
             <div className="text-[10px] font-bold uppercase tracking-wider text-violet-400">Compliance Legal Docs</div>
@@ -269,11 +302,15 @@ export default function Marketplace({
                         <span className="flex items-center gap-1 font-semibold text-amber-300">
                           <ShieldCheck className="w-3.5 h-3.5 text-amber-400" /> Audited by:
                         </span>
-                        <span className="text-white font-bold truncate max-w-[130px]">{project.assignedVerifier.name}</span>
+                        <span className="text-white font-bold truncate max-w-[130px]">
+                          {(project.quorum?.votes || []).some((v) => v.approved)
+                            ? `${project.quorum!.approvals} staked verifier(s)`
+                            : `AI policy gate`}
+                        </span>
                       </div>
                       <div className="flex justify-between text-slate-500 font-mono">
-                        <span>PoS Stake:</span>
-                        <span className="text-amber-400">0.5 ETH Locked</span>
+                        <span>AI confidence:</span>
+                        <span className={project.aiConfidenceScore >= 85 ? 'text-emerald-400' : 'text-amber-400'}>{project.aiConfidenceScore}% · {project.riskLevel}</span>
                       </div>
                       <div className="flex justify-between text-slate-500 font-mono">
                         <span>Top Merkle:</span>
@@ -283,7 +320,7 @@ export default function Marketplace({
 
                     {/* 0% Commission Badge */}
                     <div className="flex items-center gap-1 text-[10px] text-teal-300 font-mono">
-                      <CheckCircle2 className="w-3 h-3 text-teal-400" /> Direct P2P Settlement · 0% Intermediary Fee
+                      <Lock className="w-3 h-3 text-teal-400" /> Escrow-protected · refund if proven fraudulent
                     </div>
                   </div>
 
@@ -328,6 +365,21 @@ export default function Marketplace({
             <div className="space-y-3">
               {portfolioItems.map(({ project, nft }) => {
                 const isRetired = nft.status === 'RETIRED';
+                const statusStyle: Record<string, string> = {
+                  RETIRED: 'bg-teal-500/20 text-teal-300 border-teal-500/30',
+                  PURCHASED: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+                  IN_ESCROW: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+                  DISPUTED: 'bg-orange-500/20 text-orange-300 border-orange-500/30',
+                  REVOKED: 'bg-red-500/20 text-red-300 border-red-500/30'
+                };
+                const statusLabel: Record<string, string> = {
+                  RETIRED: 'PERMANENTLY RETIRED',
+                  PURCHASED: 'OWNED · TRADABLE',
+                  IN_ESCROW: 'IN ESCROW',
+                  DISPUTED: 'DISPUTED · FROZEN',
+                  REVOKED: nft.escrowStatus === 'REFUNDED' ? 'REVOKED · BUYER REFUNDED' : 'REVOKED'
+                };
+                const releaseMs = nft.releaseAfter ? new Date(nft.releaseAfter).getTime() - now : 0;
 
                 return (
                   <div
@@ -339,14 +391,8 @@ export default function Marketplace({
                         <span className="font-mono text-xs font-bold text-white bg-slate-800 px-2.5 py-0.5 rounded-full">
                           Token #{nft.tokenId}
                         </span>
-                        <span
-                          className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
-                            isRetired
-                              ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
-                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                          }`}
-                        >
-                          {isRetired ? 'PERMANENTLY RETIRED' : 'ACTIVE IN PORTFOLIO'}
+                        <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${statusStyle[nft.status] || statusStyle.PURCHASED}`}>
+                          {statusLabel[nft.status] || nft.status}
                         </span>
                         <span className="text-xs text-slate-400 font-mono">Serial: {nft.serialNumber}</span>
                       </div>
@@ -361,6 +407,17 @@ export default function Marketplace({
                           Retirement Purpose: "{nft.retirementReason}"
                         </div>
                       )}
+                      <div className="font-mono text-[10px] text-slate-500 space-y-0.5 pt-1">
+                        {nft.purchaseTxHash && <div>Escrow deposit tx: <span className="text-sky-300">{short(nft.purchaseTxHash)}</span> · {nft.priceEth} ETH</div>}
+                        {nft.burnTxHash && <div>Burn tx: <span className="text-teal-300">{short(nft.burnTxHash)}</span></div>}
+                        {nft.status === 'IN_ESCROW' && (
+                          <div className="text-amber-300 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {releaseMs > 0 ? `Challenge window: ${Math.ceil(releaseMs / 1000)}s left (accept early or dispute)` : 'Challenge window over: settle now'}
+                          </div>
+                        )}
+                        {nft.disputeReason && <div className="text-orange-300">Dispute: "{nft.disputeReason}" ({nft.disputeStatus})</div>}
+                      </div>
                     </div>
 
                     <div className="flex flex-col sm:flex-row sm:items-center gap-4">
@@ -373,19 +430,38 @@ export default function Marketplace({
 
                       {/* Actions */}
                       <div className="flex items-center gap-2">
-                        {isRetired ? (
+                        {isRetired && (
                           <button
                             onClick={() => handleViewExistingCertificate({ project, nft })}
                             className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-teal-500/20 border border-teal-500/40 text-teal-300 hover:bg-teal-500/30 text-xs font-bold transition-all"
                           >
-                            <FileText className="w-3.5 h-3.5" /> View Legal Certificate 📄
+                            <FileText className="w-3.5 h-3.5" /> View Certificate
                           </button>
-                        ) : (
+                        )}
+                        {['IN_ESCROW', 'PURCHASED'].includes(nft.status) && (
+                          <button
+                            onClick={() => setDisputeItem({ project, nft })}
+                            disabled={busyToken === nft.tokenId}
+                            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-orange-500/40 text-orange-300 hover:bg-orange-500/10 text-xs font-bold disabled:opacity-50"
+                          >
+                            <Gavel className="w-3.5 h-3.5" /> Raise Dispute
+                          </button>
+                        )}
+                        {nft.status === 'IN_ESCROW' && (
+                          <button
+                            onClick={() => handleRelease(nft)}
+                            disabled={busyToken === nft.tokenId}
+                            className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold disabled:opacity-50"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" /> {busyToken === nft.tokenId ? 'Settling…' : 'Accept & Settle'}
+                          </button>
+                        )}
+                        {nft.status === 'PURCHASED' && (
                           <button
                             onClick={() => setRetireItem({ project, nft })}
                             className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-gradient-to-r from-red-500 to-amber-500 hover:from-red-400 hover:to-amber-400 text-white text-xs font-extrabold shadow-lg shadow-red-500/20 transition-all"
                           >
-                            <Flame className="w-3.5 h-3.5" /> Claim & Retire Offset
+                            <Flame className="w-3.5 h-3.5" /> Retire (Burn)
                           </button>
                         )}
                       </div>
@@ -404,13 +480,13 @@ export default function Marketplace({
           <div className="w-full max-w-md rounded-3xl border border-emerald-500/30 bg-[#0B0F17] p-6 shadow-2xl space-y-5">
             <div>
               <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-emerald-400">
-                Direct Peer-to-Peer Settlement
+                On-Chain Escrow Purchase
               </span>
               <h3 className="text-xl font-black text-white mt-1">
                 Acquire Credit #{buyItem.nft.tokenId}
               </h3>
               <p className="text-xs text-slate-300 mt-1">
-                Direct purchase from <strong>{buyItem.project.developerName}</strong>. 0% intermediary fees.
+                From <strong>{buyItem.project.developerName}</strong>. Your ETH is locked in the EscrowSettlement contract during the challenge window and refunded 100% if the credit is proven fraudulent.
               </p>
             </div>
 
@@ -424,8 +500,8 @@ export default function Marketplace({
                 <span className="font-mono text-white font-bold">{buyItem.nft.priceEth} ETH</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Protocol Commission:</span>
-                <span className="font-mono text-teal-400 font-bold">0.00 ETH (0%)</span>
+                <span className="text-slate-400">Held in escrow until:</span>
+                <span className="font-mono text-amber-300 font-bold">challenge window ends / you accept</span>
               </div>
               <div className="flex justify-between pt-2 border-t border-white/10">
                 <span className="text-slate-400">Net to Developer:</span>
@@ -457,7 +533,7 @@ export default function Marketplace({
                 className="px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs shadow-lg shadow-emerald-500/25 flex items-center gap-2 disabled:opacity-50"
               >
                 <Coins className="w-4 h-4" />
-                {isBuying ? 'Settling Payment…' : `Confirm & Pay ${buyItem.nft.priceEth} ETH`}
+                {isBuying ? 'Locking Payment…' : `Pay ${buyItem.nft.priceEth} ETH into Escrow`}
               </button>
             </div>
           </div>
@@ -533,6 +609,29 @@ export default function Marketplace({
               >
                 <Flame className="w-4 h-4" />
                 {isRetiring ? 'Burning On-Chain…' : 'Burn & Generate Legal Certificate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {disputeItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md">
+          <div className="w-full max-w-md rounded-3xl border border-orange-500/30 bg-[#0B0F17] p-6 shadow-2xl space-y-4 text-xs">
+            <div>
+              <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-orange-400"><Gavel className="w-4 h-4" /> File an on-chain dispute</div>
+              <h3 className="text-xl font-black text-white mt-1">Credit #{disputeItem.nft.tokenId} · {disputeItem.project.name}</h3>
+              <p className="text-slate-300 mt-1">
+                The credit is frozen immediately. If the regulator upholds the dispute, it is revoked, your escrowed payment is refunded 100% and every verifier who approved it loses 50% of their stake.
+              </p>
+            </div>
+            <textarea rows={3} value={disputeReason} onChange={(e) => setDisputeReason(e.target.value)}
+              className="w-full rounded-xl border border-white/10 bg-black/40 p-3 text-white outline-none focus:border-orange-500" />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setDisputeItem(null)} className="px-4 py-2 rounded-xl border border-white/10 text-slate-300">Cancel</button>
+              <button onClick={handleDispute} disabled={disputeReason.trim().length < 10 || busyToken !== null}
+                className="px-5 py-2 rounded-xl bg-orange-500 text-slate-950 font-bold hover:bg-orange-400 disabled:opacity-50">
+                {busyToken !== null ? 'Filing…' : 'File Dispute On-Chain'}
               </button>
             </div>
           </div>

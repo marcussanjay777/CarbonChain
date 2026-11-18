@@ -3,6 +3,7 @@ import { supabase } from '../config/supabase';
 import { authenticate } from '../auth/middleware';
 import { createSessionToken, hashPassword, verifyPassword } from '../auth/session';
 import { AuthenticatedUser, PROTOCOL_ROLES, ProtocolRole } from '../auth/types';
+import { RelayerService } from '../services/relayer.service';
 
 const router = Router();
 const attempts = new Map<string, { count: number; startedAt: number }>();
@@ -72,6 +73,18 @@ router.post('/signup', async (req: Request, res: Response) => {
       return res.status(409).json({ error: 'This Carbonyx user ID is already registered' });
     }
 
+    // On the local demo chain every new account gets its own funded test wallet, so it can stake,
+    // buy and sign straight away. On any other network the user binds their own wallet.
+    let walletAddress: string | null = null;
+    if (RelayerService.isLocalDemo()) {
+      const { count } = await supabase.from('app_users').select('id', { count: 'exact', head: true });
+      try {
+        walletAddress = await RelayerService.assignSignupWallet(Number(count || 0));
+      } catch (err: any) {
+        console.warn('[Auth] Could not assign a demo wallet:', err.message);
+      }
+    }
+
     const passwordRecord = hashPassword(password);
     const { data: record, error: insertError } = await supabase
       .from('app_users')
@@ -80,6 +93,7 @@ router.post('/signup', async (req: Request, res: Response) => {
         display_name: displayName,
         organization,
         role,
+        wallet_address: walletAddress,
         password_salt: passwordRecord.salt,
         password_hash: passwordRecord.hash,
         is_active: true
@@ -142,6 +156,9 @@ router.post('/login', async (req: Request, res: Response) => {
 
     attempts.delete(attemptKey);
     const user = publicUser(record);
+    if (user.walletAddress) {
+      try { await RelayerService.ensureFunded(user.walletAddress); } catch { /* chain offline: login still works */ }
+    }
     await supabase.from('app_users').update({ last_login_at: new Date().toISOString() }).eq('id', record.id);
     return res.json({ token: createSessionToken(user), user, expiresIn: 8 * 60 * 60 });
   } catch (error: any) {

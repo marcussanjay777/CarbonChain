@@ -1,4 +1,3 @@
-import { projectFlowStore } from '../lib/projectFlowStore';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle, Bell, CheckCircle2, Database, Download, Eye, FileSearch,
@@ -7,6 +6,7 @@ import {
 } from 'lucide-react';
 import { apiFetch, readApiJson } from '../lib/auth';
 import { ActivityBarChart, ActivityDonutChart } from '../components/ActivityCharts';
+import OnChainConsole from '../components/OnChainConsole';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5005';
 const ACTIONS = [
@@ -40,95 +40,27 @@ export default function AuditorExplorer() {
   const [showPolicy, setShowPolicy] = useState(false);
   const [policy, setPolicy] = useState<any>(DEFAULT_POLICY);
 
-  const getFallbackOverview = () => {
-    const all = projectFlowStore.getAllProjects();
-    const allNfts = all.flatMap((p) => p.nfts || []);
-    return {
-      investigations: all.map((p) => ({
-        project: {
-          project_id: p.id,
-          name: p.name,
-          project_type: p.projectType,
-          location: p.location,
-          claimed_annual_tonnage: p.claimedAnnualTonnage,
-          status: p.lifecycleState === 'BASELINE_WINDOW' ? 'OBSERVATION' : p.lifecycleState
-        },
-        bundle: {
-          bundle_id: `bundle_${p.id}`,
-          merkle_root: p.merkleRoot,
-          status: p.objections.length > 0 ? 'CHALLENGED' : 'COMMITTED',
-          submitted_at: p.createdAt
-        },
-        risk: {
-          confidence_score: p.aiConfidenceScore,
-          risk_level: p.riskLevel,
-          anomaly_flags: p.objections.length > 0 ? ['Community scrutiny alert active'] : [],
-          verifier_required: p.riskLevel === 'HIGH' || p.objections.length > 0
-        },
-        evidenceItems: [
-          { source_type: 'OPERATIONAL_DOC', payload: { projectCapexUsd: p.capexUsd } },
-          { source_type: 'IOT_SENSOR', payload: { co2FluxPpm: 412, soilMoisturePct: 35.8 } },
-          { source_type: 'SATELLITE_NDVI', payload: { meanNdvi: 0.78, canopyCoveragePct: 82.5 } }
-        ],
-        credits: (p.nfts || []).map((n) => ({
-          token_id: n.tokenId,
-          co2_tonnage: n.co2Tonnage,
-          status: n.status
-        })),
-        disputes: (p.objections || []).map((o) => ({
-          id: o.id,
-          status: o.status,
-          category: o.category,
-          reason: o.reason,
-          created_at: o.createdAt
-        }))
-      })),
-      credits: allNfts.map((n) => ({
-        token_id: n.tokenId,
-        co2_tonnage: n.co2Tonnage,
-        status: n.status
-      })),
-      verifiers: [
-        { verifier_address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', reputation_score: 98, staked_eth: '5.0', active_audits: 2 },
-        { verifier_address: '0x90F79bf6EB2c4f870365E785982E1f101E93b906', reputation_score: 94, staked_eth: '3.5', active_audits: 1 }
-      ],
-      integrityAlerts: [
-        { code: 'SAT-DRIFT-01', severity: 'MEDIUM', title: 'NDVI Canopy Variance', detail: 'Telemetry deviation noted on buffer border parcel during rainy cycle' },
-        { code: 'MERKLE-PASS-02', severity: 'LOW', title: 'SHA-256 State Match', detail: 'Orbital multispectral snapshot hashes match smart contract commitment' }
-      ],
-      disputes: [
-        { id: 'DISP-101', status: 'OPEN', project_id: 'PROJ-AMAZON-001', category: 'Biomass Calibration', reason: 'Independent satellite validation recommended for buffer zone.' }
-      ],
-      policy: DEFAULT_POLICY,
-      watchlist: []
-    };
-  };
-
   const fetchOverview = async () => {
     setIsLoading(true);
-    setError('');
     try {
       const response = await apiFetch(`${API_URL}/api/regulator/overview`);
       const payload = await readApiJson<any>(response);
-      if (response.ok && payload.investigations) {
-        setData(payload);
-        setPolicy({ ...DEFAULT_POLICY, ...(payload.policy || {}) });
-        setSelectedCase((current: any) => payload.investigations?.find((item: any) => item.project.project_id === current?.project?.project_id) || null);
-        setIsLoading(false);
-        return;
-      }
+      if (!response.ok) throw new Error(payload.error || 'Unable to load the regulator overview');
+      setData(payload);
+      setPolicy({ ...DEFAULT_POLICY, ...(payload.policy || {}) });
+      setSelectedCase((current: any) => payload.investigations?.find((item: any) => item.project.project_id === current?.project?.project_id) || null);
     } catch (loadError: any) {
-      console.warn('Backend regulator API offline, loading synthesized registry audit state:', loadError);
+      setError(loadError.message);
     } finally {
       setIsLoading(false);
     }
-    const fallback = getFallbackOverview();
-    setData(fallback);
-    setPolicy({ ...DEFAULT_POLICY, ...(fallback.policy || {}) });
-    setSelectedCase((current: any) => fallback.investigations.find((item: any) => item.project.project_id === current?.project?.project_id) || fallback.investigations[0] || null);
   };
 
-  useEffect(() => { fetchOverview(); }, []);
+  useEffect(() => {
+    fetchOverview();
+    const t = setInterval(() => { void fetchOverview(); }, 6000);
+    return () => clearInterval(t);
+  }, []);
 
   const investigations = data.investigations || [];
   const credits = data.credits || [];
@@ -208,7 +140,10 @@ export default function AuditorExplorer() {
     setIsSubmitting(true); setError(''); setMessage('');
     try {
       const payload = await callRegulatorApi(`disputes/${disputeId}/resolve`, { ruling, reason });
-      setMessage(payload.message); await fetchOverview();
+      setMessage(ruling === 'UPHELD'
+        ? `Dispute upheld on-chain: credit revoked, buyer refunded ${payload.refundEth} ETH, verifiers slashed ${payload.slashedEth} ETH.`
+        : 'Dispute dismissed on-chain.');
+      await fetchOverview();
     } catch (submitError: any) { setError(submitError.message); }
     finally { setIsSubmitting(false); }
   };
@@ -272,6 +207,14 @@ export default function AuditorExplorer() {
         ))}
       </div>
 
+      <OnChainConsole
+        disputes={data.disputes || []}
+        slashingEvents={data.slashingEvents || []}
+        escrows={data.escrows || []}
+        investigations={investigations}
+        onChanged={fetchOverview}
+      />
+
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <ActivityDonutChart title="Market risk distribution" subtitle="AI classification across registered projects" data={riskDistribution} valueLabel="projects" />
         <ActivityBarChart title="Issuance by vintage" subtitle="Total verified carbon volume by credit vintage" data={issuanceByVintage} valueLabel="tCO2e" formatValue={(value) => value.toLocaleString()} />
@@ -300,7 +243,7 @@ export default function AuditorExplorer() {
             <table className="w-full min-w-[560px] text-left text-xs">
               <thead className="border-b border-slate-200 text-[9px] uppercase tracking-wider text-slate-500"><tr><th className="pb-2">Wallet</th><th className="pb-2">Stake</th><th className="pb-2">Reputation</th><th className="pb-2">Reviews</th><th className="pb-2">Slashed</th><th className="pb-2 text-right">Watch</th></tr></thead>
               <tbody className="divide-y divide-slate-100">{verifiers.map((verifier: any) => (
-                <tr key={verifier.verifier_address}><td className="py-3 font-mono text-[10px] text-slate-700">{String(verifier.verifier_address).slice(0, 8)}…{String(verifier.verifier_address).slice(-6)}</td><td className="py-3 font-mono font-bold">{verifier.staked_amount} ETH</td><td className="py-3 font-bold text-emerald-700">{verifier.reputation_score}/100</td><td className="py-3">{verifier.total_verified || 0}</td><td className="py-3 text-red-600">{verifier.total_slashed || 0}</td><td className="py-3 text-right"><button onClick={() => toggleWatch('VERIFIER', verifier.verifier_address)} disabled={isSubmitting} aria-label="Toggle verifier watchlist"><Star className={`h-4 w-4 ${watched('VERIFIER', verifier.verifier_address) ? 'fill-amber-400 text-amber-400' : 'text-slate-400'}`} /></button></td></tr>
+                <tr key={verifier.verifier_address}><td className="py-3 font-mono text-[10px] text-slate-700">{String(verifier.verifier_address).slice(0, 8)}…{String(verifier.verifier_address).slice(-6)}</td><td className="py-3 font-mono font-bold">{Number(verifier.staked_amount || 0).toFixed(3)} ETH</td><td className="py-3 font-bold text-emerald-700">{verifier.reputation_score}/100</td><td className="py-3">{verifier.total_verified || 0}</td><td className="py-3 text-red-600">{Number(verifier.total_slashed || 0).toFixed(3)} ETH</td><td className="py-3 text-right"><button onClick={() => toggleWatch('VERIFIER', verifier.verifier_address)} disabled={isSubmitting} aria-label="Toggle verifier watchlist"><Star className={`h-4 w-4 ${watched('VERIFIER', verifier.verifier_address) ? 'fill-amber-400 text-amber-400' : 'text-slate-400'}`} /></button></td></tr>
               ))}</tbody>
             </table>
           </div>

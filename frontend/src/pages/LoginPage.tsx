@@ -47,6 +47,16 @@ const roleCards: Array<{
     color: '#F59E0B'
   },
   {
+    role: 'INDEPENDENT_VERIFIER',
+    title: 'Second Verifier',
+    subtitle: 'High-risk bundles need a 2-verifier quorum. Use this account for the second vote.',
+    stage: 'Stake → Inspect → Quorum vote',
+    loginId: 'verifier2.demo',
+    password: 'Verify@2026',
+    icon: ShieldCheck,
+    color: '#EAB308'
+  },
+  {
     role: 'CORPORATE_BUYER',
     title: 'Corporate Buyer',
     subtitle: 'Acquire escrow-protected credits and retire them on-chain.',
@@ -96,73 +106,43 @@ export default function LoginPage({
     setError('');
   };
 
-  const handleInstantDemoLogin = (roleCard: (typeof roleCards)[number]) => {
-    const demoUser: AuthSession['user'] = {
-      id: `demo-${roleCard.role.toLowerCase()}`,
-      loginId: roleCard.loginId,
-      displayName:
-        roleCard.role === 'PROJECT_PROPONENT'
-          ? 'Amazonas BioCarbon Consórcio'
-          : roleCard.role === 'INDEPENDENT_VERIFIER'
-          ? 'Dr. Elena Rostova (SGS)'
-          : roleCard.role === 'CORPORATE_BUYER'
-          ? 'Microsoft Carbon Zero'
-          : 'UNFCCC Regulatory Auditor',
-      organization:
-        roleCard.role === 'PROJECT_PROPONENT'
-          ? 'Amazonas Consórcio'
-          : roleCard.role === 'INDEPENDENT_VERIFIER'
-          ? 'SGS Climate Assurance'
-          : roleCard.role === 'CORPORATE_BUYER'
-          ? 'Microsoft Sustainability'
-          : 'UNFCCC Secretariat',
-      role: roleCard.role,
-      walletAddress:
-        roleCard.role === 'PROJECT_PROPONENT'
-          ? '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
-          : roleCard.role === 'INDEPENDENT_VERIFIER'
-          ? '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC'
-          : roleCard.role === 'CORPORATE_BUYER'
-          ? '0x90F79bf6EB2c4f870365E785982E1f101E93b906'
-          : '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65'
-    };
-    const token = `demo-session-${Date.now()}`;
-    saveAuthToken(token);
-    saveStoredUser(demoUser);
-    onLogin({ token, user: demoUser });
-  };
-
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const authenticate = async (body: Record<string, unknown>, endpoint: 'login' | 'signup') => {
     setError('');
     setIsSubmitting(true);
     try {
-      const response = await fetch(`${API_URL}/api/auth/${mode === 'login' ? 'login' : 'signup'}`, {
+      const response = await fetch(`${API_URL}/api/auth/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          mode === 'login'
-            ? { loginId, password }
-            : { loginId, password, displayName, organization, role: signupRole, accessCode }
-        )
+        body: JSON.stringify(body)
       });
       const data = await readApiJson<{ token: string; user: AuthSession['user']; error?: string }>(response);
-      if (!response.ok) throw new Error(data.error || (mode === 'login' ? 'Sign in failed' : 'Sign up failed'));
+      if (!response.ok) throw new Error(data.error || (endpoint === 'login' ? 'Sign in failed' : 'Sign up failed'));
       saveAuthToken(data.token);
       saveStoredUser(data.user);
       onLogin({ token: data.token, user: data.user });
     } catch (err: any) {
-      // Graceful demo fallback for offline or uninitialized databases
-      const matched = roleCards.find(c => c.loginId.toLowerCase() === loginId.trim().toLowerCase());
-      if (matched || loginId.toLowerCase().includes('demo') || mode === 'login') {
-        const target = matched || roleCards[0];
-        handleInstantDemoLogin(target);
-        return;
-      }
-      setError(err.message || 'Authentication service is unavailable');
+      setError(
+        err?.message?.includes('Failed to fetch')
+          ? `Cannot reach the CarbonChain API at ${API_URL}. Start the stack with: node scripts/start-demo.mjs`
+          : err.message || 'Authentication service is unavailable'
+      );
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // One-click demo access performs a REAL login with the seeded demo credentials.
+  const handleInstantDemoLogin = (roleCard: (typeof roleCards)[number]) =>
+    authenticate({ loginId: roleCard.loginId, password: roleCard.password }, 'login');
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await authenticate(
+      mode === 'login'
+        ? { loginId, password }
+        : { loginId, password, displayName, organization, role: signupRole, accessCode },
+      mode
+    );
   };
 
   return (
@@ -220,7 +200,7 @@ export default function LoginPage({
                 const selected = mode === 'signup' ? signupRole === role.role : loginId === role.loginId;
                 return (
                   <div
-                    key={role.role}
+                    key={role.loginId}
                     className={`group relative rounded-2xl border p-4 text-left transition-all ${
                       selected ? 'border-[#15ed48]/60 bg-[#15ed48]/10 shadow-sm' : 'border-white/10 bg-white/5 hover:border-[#00a699]/50 hover:bg-white/10'
                     }`}
@@ -335,7 +315,7 @@ export default function LoginPage({
                       }}
                       className="h-12 w-full rounded-xl border border-white/10 bg-[#071027] px-4 text-sm text-white outline-none transition focus:border-[#00a699]/70 focus:ring-2 focus:ring-[#00a699]/15"
                     >
-                      {roleCards.map((role) => <option key={role.role} value={role.role}>{role.title}</option>)}
+                      {roleCards.filter((role, i, all) => all.findIndex((r) => r.role === role.role) === i).map((role) => <option key={role.role} value={role.role}>{role.title}</option>)}
                     </select>
                   </label>
                 </>
